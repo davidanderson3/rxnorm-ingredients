@@ -7,10 +7,12 @@ Each SCDC item includes its SCDs as SCDs[].
 
 Usage:
   python extract_rxnorm_ingredients.py \
-      --rrf-dir /path/to/rrf
+      --rrf-dir /optional/path/to/rrf  # if omitted, downloads the current release automatically
 
 Notes:
-  - Generates web assets into ./web by default (override with --web-split).
+  - Downloads https://download.nlm.nih.gov/rxnorm/RxNorm_full_prescribe_current.zip,
+    extracts it into the current working directory, and reads the RRF files from the extracted tree.
+  - Generates web assets into ./web by default.
   - Restricts to English names (LAT=ENG); no flag needed.
   - Expects the standard RXNCONSO field order used by RxNorm RRF files:
     [0] RXCUI, [1] LAT, [2] TS, [3] LUI, [4] STT, [5] SUI, [6] ISPREF,
@@ -26,24 +28,81 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import http.server
 import json
 import os
+import socketserver
 import sys
+import urllib.error
+import urllib.request
+import urllib.parse
+import webbrowser
+import zipfile
+from functools import partial
+from threading import Thread
+from time import sleep
 from typing import Iterable, Dict, Any, Tuple, Set, List
 
 
 TARGET_SAB = "RXNORM"
 TARGET_TTYS = {"IN", "PIN", "MIN"}
+RXN_ZIP_URL = "https://download.nlm.nih.gov/rxnorm/RxNorm_full_prescribe_current.zip"
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Extract RxNorm ingredient concepts from RXNCONSO.RRF")
     p.add_argument(
         "--rrf-dir",
-        required=True,
-        help="Directory containing RRF files (RXNCONSO.RRF, RXNREL.RRF, RXNSAT.RRF)",
+        help="Directory containing RXNCONSO.RRF, RXNREL.RRF, RXNSAT.RRF. If omitted, downloads the current RxNorm prescribe ZIP.",
     )
     return p.parse_args()
+
+
+def locate_rrf_dir(root: str) -> str | None:
+    """Find the directory containing the required RRF files inside extracted contents."""
+    required = {"RXNCONSO.RRF", "RXNREL.RRF", "RXNSAT.RRF"}
+    for dirpath, _, filenames in os.walk(root):
+        if required.issubset(set(filenames)):
+            return dirpath
+    return None
+
+
+def download_and_extract(url: str, extract_dir: str) -> str:
+    """Download the RxNorm ZIP, extract into extract_dir, and return the RRF directory path."""
+    os.makedirs(extract_dir, exist_ok=True)
+    zip_name = os.path.basename(urllib.parse.urlparse(url).path) or "rxnorm_prescribe.zip"
+    base_name, _ = os.path.splitext(zip_name)
+    target_dir = os.path.join(extract_dir, base_name)
+    os.makedirs(target_dir, exist_ok=True)
+    zip_path = os.path.join(extract_dir, zip_name)
+    print(f"Downloading RxNorm prescribe archive from {url} ...", file=sys.stderr)
+    urllib.request.urlretrieve(url, zip_path)
+    print(f"Extracting to {target_dir} ...", file=sys.stderr)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(target_dir)
+    try:
+        os.remove(zip_path)
+    except OSError:
+        pass
+    rrf_dir = locate_rrf_dir(target_dir)
+    if not rrf_dir:
+        raise FileNotFoundError("RXNCONSO.RRF")
+    return rrf_dir
+
+
+def start_http_server(directory: str, preferred_port: int = 8000) -> tuple[socketserver.TCPServer, int]:
+    """Start a simple HTTP server rooted at directory; returns (server, port)."""
+    class SilentHTTPServer(socketserver.TCPServer):
+        allow_reuse_address = True
+
+    Handler = partial(http.server.SimpleHTTPRequestHandler, directory=directory)
+    for port in [preferred_port] + list(range(preferred_port + 1, preferred_port + 6)):
+        try:
+            httpd = SilentHTTPServer(("127.0.0.1", port), Handler)
+            return httpd, port
+        except OSError:
+            continue
+    raise OSError("Could not bind an HTTP port")
 
 
 def _choose_name(existing: Tuple[str, str] | None, candidate: Tuple[str, str]) -> Tuple[str, str]:
@@ -503,13 +562,22 @@ def write_web_split(data: List[Dict[str, Any]], out_dir: str) -> None:
 
 def main() -> int:
     args = parse_args()
-    input_path = os.path.join(args.rrf_dir, "RXNCONSO.RRF")
-    rel_path = os.path.join(args.rrf_dir, "RXNREL.RRF")
-    sat_path = os.path.join(args.rrf_dir, "RXNSAT.RRF")
     only_eng = True  # RxNorm content is English; enforce without a flag
     output_path = "rxnorm_ingredients.json"
     web_split_dir = "web"
+    input_path = rel_path = sat_path = ""
     try:
+        if args.rrf_dir:
+            rrf_dir = args.rrf_dir
+            print(f"Using local RRF directory: {rrf_dir}", file=sys.stderr)
+        else:
+            download_root = os.getcwd()
+            rrf_dir = download_and_extract(RXN_ZIP_URL, download_root)
+            print(f"Using downloaded RRFs from: {rrf_dir}", file=sys.stderr)
+        input_path = os.path.join(rrf_dir, "RXNCONSO.RRF")
+        rel_path = os.path.join(rrf_dir, "RXNREL.RRF")
+        sat_path = os.path.join(rrf_dir, "RXNSAT.RRF")
+
         (
             ingredients,
             scdc_names,
@@ -632,27 +700,34 @@ def main() -> int:
         output.sort(key=lambda r: (r.get("Name") or "").lower())
         write_json(output, output_path, ndjson=False)
         write_web_split(output, web_split_dir)
+        print(f"Wrote {output_path} and web assets in {web_split_dir}/", file=sys.stderr)
+
+        # Serve the web UI and open in browser
+        try:
+            httpd, port = start_http_server(directory=".")
+            url = f"http://127.0.0.1:{port}/web/"
+            print(f"Serving ./web via http://127.0.0.1:{port}/web/ (Ctrl+C to stop)", file=sys.stderr)
+            webbrowser.open(url)
+            # Run the server until interrupted
+            thread = Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            while True:
+                sleep(1)
+        except KeyboardInterrupt:
+            print("Stopping server...", file=sys.stderr)
+            try:
+                httpd.shutdown()
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"Could not start HTTP server: {e}", file=sys.stderr)
     except FileNotFoundError as e:
         missing = e.filename or input_path
-        cwd = os.getcwd()
-        sys.stderr.write(f"File not found: {missing}\n")
-        if missing == input_path:
-            sys.stderr.write(
-                f"Expected RXNCONSO.RRF under --rrf-dir. Place RXNCONSO.RRF in {args.rrf_dir} "
-                f"(current working directory: {cwd})\n"
-            )
-        elif missing == rel_path:
-            sys.stderr.write(
-                f"Expected RXNREL.RRF under --rrf-dir. Place RXNREL.RRF in {args.rrf_dir} "
-                f"(current working directory: {cwd})\n"
-            )
-        elif missing == sat_path:
-            sys.stderr.write(
-                f"Expected RXNSAT.RRF under --rrf-dir. Place RXNSAT.RRF in {args.rrf_dir} "
-                f"(current working directory: {cwd})\n"
-            )
-        else:
-            sys.stderr.write("Required files: RXNCONSO.RRF, RXNREL.RRF, RXNSAT.RRF inside --rrf-dir.\n")
+        sys.stderr.write(f"File not found after download/extract: {missing}\n")
+        sys.stderr.write("Ensure the RxNorm archive contains RXNCONSO.RRF, RXNREL.RRF, and RXNSAT.RRF.\n")
+        return 1
+    except urllib.error.URLError as e:
+        sys.stderr.write(f"Download failed: {e}\n")
         return 1
     return 0
 
