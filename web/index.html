@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RxNorm Ingredients Browser</title>
+    <style>
+      :root { --fg:#0b1020; --muted:#667; --bg:#fff; --hl:#0658f6; --chip:#eef3ff; }
+      html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif}
+      header{padding:12px 16px;border-bottom:1px solid #e5e8f0;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+      h1{font-size:16px;margin:0}
+      .letters{display:flex;gap:6px;flex-wrap:wrap}
+      .letters button{padding:6px 9px;border:1px solid #d7dbe6;background:#fff;border-radius:6px;cursor:pointer}
+      .letters button.active{background:var(--chip);border-color:var(--hl);color:var(--hl)}
+      .search{margin-left:auto;display:flex;gap:8px;align-items:center}
+      .search input{padding:8px 10px;border:1px solid #ccd3e0;border-radius:6px;min-width:220px}
+      main{display:grid;grid-template-columns:320px 1fr 1fr 1fr;min-height:calc(100vh - 52px)}
+      aside{border-right:1px solid #e5e8f0;overflow:auto}
+      .list-header{padding:8px 12px;font-weight:600;border-bottom:1px solid #f0f2f7;background:#fafbfe}
+      #list{list-style:none;margin:0;padding:0}
+      #list li{padding:10px 12px;border-bottom:1px solid #f0f2f7;cursor:pointer}
+      #list li:hover{background:#fafbfe}
+      #list li.active{background:#f6f8fe;border-left:3px solid var(--hl)}
+      #list .name{font-weight:600}
+      #list .meta{color:var(--muted);font-size:12px}
+      section{padding:12px 16px;overflow:auto;border-right:1px solid #e5e8f0}
+      .pill{display:inline-block;background:var(--chip);color:var(--hl);border:1px solid var(--hl);padding:2px 6px;border-radius:999px;font-size:12px;margin-left:6px}
+      details{margin:8px 0}
+      summary{cursor:pointer}
+      .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
+      .card{border:1px solid #e5e8f0;border-radius:8px;padding:8px}
+      .line{display:flex;gap:6px;align-items:center}
+      .tag{font-size:11px;background:#f4f6fb;border:1px solid #e5e8f0;border-radius:4px;padding:1px 4px;color:#445}
+      .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+      .muted{color:var(--muted)}
+      .list{list-style:none;margin:0;padding:0}
+      .list li{padding:8px 10px;border-bottom:1px solid #f0f2f7;cursor:pointer}
+      .list li.active{background:#f6f8fe}
+      .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+      .chip-link{font-size:12px;padding:2px 6px;border-radius:999px;border:1px solid #b9c6f8;background:#eef3ff;color:#2a56cc;text-decoration:none}
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>RxNorm Ingredients</h1>
+      <div class="letters" id="letters"></div>
+      
+    </header>
+    <main>
+      <aside>
+        <div class="search" style="padding:10px 12px;border-bottom:1px solid #f0f2f7;">
+          <input id="q" placeholder="Filter in current letter… (e.g., mesna)" />
+          <span id="count" class="muted"></span>
+        </div>
+        <div class="list-header">Ingredients</div>
+        <ul id="list"></ul>
+      </aside>
+      <section>
+        <div id="scdcCol" class="muted">SCDCs will appear here.</div>
+      </section>
+      <section>
+        <div id="scdCol" class="muted">SCDs will appear here.</div>
+      </section>
+      <section>
+        <div id="sbdCol" class="muted">SBDs will appear here.</div>
+      </section>
+    </main>
+    <script>
+      const state = { manifest:null, bucketKey:null, records:[], filtered:[], selected:null, selectedScdc:null, selectedScd:null };
+      const lettersEl = document.getElementById('letters');
+      const listEl = document.getElementById('list');
+      const scdcCol = document.getElementById('scdcCol');
+      const scdCol = document.getElementById('scdCol');
+      const sbdCol = document.getElementById('sbdCol');
+      const countEl = document.getElementById('count');
+      const qEl = document.getElementById('q');
+
+      fetch('manifest.json').then(r=>r.json()).then(mf=>{
+        state.manifest = mf;
+        renderLetters(mf);
+        // auto select A if present otherwise first
+        const first = mf.find(x=>x.key==='A') || mf[0];
+        if (first) selectLetter(first.key);
+      }).catch(err=>{
+        scdcCol.textContent = 'Failed to load manifest.json. Serve this folder via a local HTTP server (e.g., python3 -m http.server).';
+      });
+
+      function renderLetters(mf){
+        lettersEl.innerHTML = '';
+        mf.forEach(entry=>{
+          const b = document.createElement('button');
+          b.textContent = entry.label;
+          b.title = `${entry.label} (${entry.count})`;
+          b.onclick = ()=> selectLetter(entry.key);
+          b.dataset.key = entry.key;
+          lettersEl.appendChild(b);
+        });
+      }
+
+      function setActiveLetter(key){
+        [...lettersEl.querySelectorAll('button')].forEach(btn=>{
+          btn.classList.toggle('active', btn.dataset.key===key);
+        });
+      }
+
+      async function selectLetter(key, opts={}){
+        state.bucketKey = key; setActiveLetter(key);
+        const ent = state.manifest.find(x=>x.key===key);
+        if(!ent) return;
+        listEl.innerHTML = '<li class="muted">Loading…</li>';
+        const data = await fetch(ent.file).then(r=>r.json());
+        state.records = data; state.filtered = data; state.selected = null; state.selectedScdc=null; state.selectedScd=null;
+        if(!opts.preserveQuery){ qEl.value=''; }
+        renderList(); renderScdcCol(); renderScdCol(); renderSbdCol();
+      }
+
+      qEl.addEventListener('input', ()=>{ applyFilters(); });
+
+      async function applyFilters(){
+        const qRaw = qEl.value;
+        const q = qRaw.trim().toLowerCase();
+        // If query starts with a letter or digit, auto-switch letter bucket
+        if(qRaw && qRaw.length){
+          const ch = qRaw[0].toUpperCase();
+          let key = null;
+          if(ch >= 'A' && ch <= 'Z'){ key = ch; }
+          else if(ch >= '0' && ch <= '9'){ key = '0-9'; }
+          if(key && key !== state.bucketKey && state.manifest && state.manifest.find(e=>e.key===key)){
+            await selectLetter(key, { preserveQuery: true });
+          }
+        }
+        state.filtered = state.records.filter(r => {
+          if(q && !(r.Name||'').toLowerCase().includes(q)) return false;
+          return true;
+        });
+        renderList();
+      }
+
+
+      function renderList(){
+        listEl.innerHTML = '';
+        countEl.textContent = `${state.filtered.length} shown`;
+        const chunk = 100;
+        let i=0;
+        function pump(){
+          const end = Math.min(i+chunk, state.filtered.length);
+          for(; i<end; i++){
+            const r = state.filtered[i];
+            const li = document.createElement('li');
+            let links = `<a href=\"https://mor.nlm.nih.gov/RxNav/search?searchBy=NameOrCode&searchTerm=${encodeURIComponent(r.RXCUI)}\" target=\"_blank\" rel=\"noopener\">RxNav</a>`;
+            if(r.SPL_SET_IDs && r.SPL_SET_IDs.length){
+              const dm = renderDailyMedLink(r.SPL_SET_IDs);
+              links = dm + ' ' + links;
+            }
+            li.innerHTML = `<div class="name">${escapeHtml(r.Name)} <span class="pill">${r.TTY}</span></div>
+                            <div class="meta mono"><strong>RXCUI</strong> ${r.RXCUI}${r.UNII?` · <strong>UNII</strong> ${r.UNII}`:''}</div>
+                            <div>${links}</div>`;
+            li.dataset.rxcui = r.RXCUI;
+            if(state.selected && state.selected.RXCUI === r.RXCUI){ li.classList.add('active'); }
+            li.onclick = ()=>{
+              state.selected = r; state.selectedScdc = null; state.selectedScd = null;
+              // auto-select when there is a single SCDC and/or SCD
+              if(r.SCDCs && r.SCDCs.length === 1){
+                state.selectedScdc = r.SCDCs[0];
+                const scds = (state.selectedScdc.SCDs||[]);
+                if(scds.length === 1){ state.selectedScd = scds[0]; }
+              }
+              // highlight selected in list
+              listEl.querySelectorAll('li').forEach(el=>{
+                el.classList.toggle('active', el.dataset.rxcui === r.RXCUI);
+              });
+              renderScdcCol(); renderScdCol(); renderSbdCol();
+              try { window.scrollTo(0, 0); } catch {}
+            };
+            listEl.appendChild(li);
+          }
+          if(i < state.filtered.length){ requestAnimationFrame(pump); }
+        }
+        pump();
+      }
+
+      // no ingredient detail column; info is shown in other columns
+
+      function renderScdcCol(){
+        const r = state.selected;
+        if(!r || !r.SCDCs || !r.SCDCs.length){ scdcCol.innerHTML = '<span class="muted">Select an ingredient from the list.</span>'; return; }
+        let html = `<h3>SCDCs (Semantic Clinical Drug Components)</h3><ul class="list">`;
+        r.SCDCs.forEach(scdc=>{
+          const active = state.selectedScdc && state.selectedScdc.RXCUI===scdc.RXCUI;
+          html += `<li class="${active?'active':''}" data-rxcui="${scdc.RXCUI}"><div><strong>${escapeHtml(scdc.Name)}</strong> <span class="pill">${scdc.TTY}</span></div>
+                   <div class="mono muted"><strong>RXCUI</strong> ${scdc.RXCUI}</div></li>`;
+        });
+        html += `</ul>`;
+        scdcCol.innerHTML = html;
+        scdcCol.querySelectorAll('li').forEach(li=>{
+          li.onclick = ()=>{
+            const cui = li.getAttribute('data-rxcui');
+            state.selectedScdc = r.SCDCs.find(x=>x.RXCUI===cui) || null;
+            // If only one SCD under this SCDC, auto-select it; otherwise clear
+            const scds = (state.selectedScdc && state.selectedScdc.SCDs) || [];
+            state.selectedScd = (scds.length === 1) ? scds[0] : null;
+            renderScdcCol(); renderScdCol(); renderSbdCol();
+          };
+        });
+      }
+
+      function renderScdCol(){
+        const scdc = state.selectedScdc;
+        if(!scdc){ scdCol.innerHTML = '<span class="muted">Pick an SCDC to see SCDs.</span>'; return; }
+        const scds = scdc.SCDs || [];
+        let html = `<h3>SCDs (${scds.length})</h3><ul class="list">`;
+        scds.forEach(scd=>{
+          const active = state.selectedScd && state.selectedScd.RXCUI===scd.RXCUI;
+          html += `<li class="${active?'active':''}" data-rxcui="${scd.RXCUI}"><div><strong>${escapeHtml(scd.Name)}</strong> <span class="pill">${scd.TTY}</span></div>
+                   <div class="mono muted"><strong>RXCUI</strong> ${scd.RXCUI}</div>`;
+          // Separate dropdowns for identifiers
+          if(scd.NDCs && scd.NDCs.length){
+            const urlN = buildDailyMedSearchUrl(null, scd.NDCs);
+            html += `<details><summary>NDCs</summary><div class="mono">${scd.NDCs.join(', ')}</div><div><a href="${urlN}" target="_blank" rel="noopener">DailyMed</a></div></details>`;
+          }
+          if(scd.SPL_SET_IDs && scd.SPL_SET_IDs.length){
+            const urlS = buildDailyMedSearchUrl(scd.SPL_SET_IDs, null);
+            html += `<details><summary>SPL Set IDs</summary><div class="mono">${scd.SPL_SET_IDs.join(', ')}</div><div><a href="${urlS}" target="_blank" rel="noopener">DailyMed</a></div></details>`;
+          }
+          if(scd.GPCKs || scd.BPCKs){
+            const gp = scd.GPCKs? scd.GPCKs.length : 0; const bp = scd.BPCKs? scd.BPCKs.length : 0;
+            html += `<div class="muted">Packs: GPCK ${gp}${gp||bp?', ':''}BPCK ${bp}</div>`;
+          }
+          
+          html += `</li>`;
+        });
+        html += `</ul>`;
+        scdCol.innerHTML = html;
+        scdCol.querySelectorAll('li').forEach(li=>{
+          li.onclick = ()=>{
+            const cui = li.getAttribute('data-rxcui');
+            state.selectedScd = (scdc.SCDs||[]).find(x=>x.RXCUI===cui) || null;
+            renderScdCol(); renderSbdCol();
+          };
+        });
+      }
+
+      function renderSbdCol(){
+        const scd = state.selectedScd;
+        if(!scd){ sbdCol.innerHTML = '<span class="muted">Pick an SCD to see SBDs.</span>'; return; }
+        const parts = [];
+        // Packs
+        if(scd.GPCKs || scd.BPCKs){
+          parts.push(`<details open><summary>Packs</summary>`);
+          if(scd.GPCKs){ parts.push(renderPackList('GPCK', scd.GPCKs)); }
+          if(scd.BPCKs){ parts.push(renderPackList('BPCK', scd.BPCKs)); }
+          parts.push(`</details>`);
+        }
+        parts.push(`<h3>SBDs (${(scd.SBDs||[]).length})</h3>`);
+        (scd.SBDs||[]).forEach(b=>{
+          let html = `<div class="card"><div class="line"><strong>${escapeHtml(b.Name)}</strong><span class="pill">${b.TTY}</span></div>`;
+          html += `<div class="mono muted"><strong>RXCUI</strong> ${b.RXCUI}</div>`;
+          if(b.NDCs && b.NDCs.length){
+            const urlN = buildDailyMedSearchUrl(null, b.NDCs);
+            html += `<details><summary>NDCs</summary><div class=\"mono\">${b.NDCs.join(', ')}</div><div><a href=\"${urlN}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+          }
+          if(b.SPL_SET_IDs && b.SPL_SET_IDs.length){
+            const urlS = buildDailyMedSearchUrl(b.SPL_SET_IDs, null);
+            html += `<details><summary>SPL Set IDs</summary><div class=\"mono\">${b.SPL_SET_IDs.join(', ')}</div><div><a href=\"${urlS}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+          }
+          if(b.BNs && b.BNs.length){
+            html += `<div class="muted"><strong>BNs</strong></div>`;
+            html += `<ul class="list">`;
+            b.BNs.forEach(n=>{
+              html += `<li><div><strong>${escapeHtml(n.Name)}</strong> <span class="pill">${n.TTY}</span></div>
+                       <div class="mono muted"><strong>RXCUI</strong> ${n.RXCUI}</div>`;
+              if(n.SPL_SET_IDs && n.SPL_SET_IDs.length){
+                const urlS = buildDailyMedSearchUrl(n.SPL_SET_IDs, null);
+                html += `<details><summary>SPL Set IDs</summary><div class=\"mono\">${n.SPL_SET_IDs.join(', ')}</div><div><a href=\"${urlS}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+              }
+              html += `</li>`;
+            });
+            html += `</ul>`;
+          }
+          html += `</div>`;
+          parts.push(html);
+        });
+        sbdCol.innerHTML = parts.join('\n');
+      }
+
+      function renderPackList(label, arr){
+        let html = `<div class="muted"><strong>${label}s</strong></div><ul class="list">`;
+        arr.forEach(p=>{
+          html += `<li><div>${escapeHtml(p.Name)} <span class="pill">${p.TTY}</span></div>
+                   <div class="mono muted"><strong>RXCUI</strong> ${p.RXCUI}</div>`;
+          if(p.NDCs && p.NDCs.length){
+            const urlN = buildDailyMedSearchUrl(null, p.NDCs);
+            html += `<details><summary>NDCs</summary><div class=\"mono\">${p.NDCs.join(', ')}</div><div><a href=\"${urlN}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+          }
+          if(p.SPL_SET_IDs && p.SPL_SET_IDs.length){
+            const urlS = buildDailyMedSearchUrl(p.SPL_SET_IDs, null);
+            html += `<details><summary>SPL Set IDs</summary><div class=\"mono\">${p.SPL_SET_IDs.join(', ')}</div><div><a href=\"${urlS}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+          }
+          html += `</li>`;
+        });
+        html += `</ul>`;
+        return html;
+      }
+
+      function buildDailyMedSearchUrl(ids, ndcs){
+        const terms = [];
+        if(ids && ids.length){ ids.forEach(id=> terms.push(`SETID:(${id})`)); }
+        if(ndcs && ndcs.length){ ndcs.forEach(n=> terms.push(`NDC:(${n})`)); }
+        if(!terms.length) return '#';
+        const q = terms.join(' OR ');
+        const enc = encodeURIComponent(q).replace(/%20/g,'+');
+        return `https://dailymed.nlm.nih.gov/dailymed/search.cfm?adv=1&labeltype=all&query=${enc}`;
+      }
+      function renderDailyMedLink(ids, ndcs){
+        const url = buildDailyMedSearchUrl(ids, ndcs);
+        return `<a href="${url}" target="_blank" rel="noopener">DailyMed</a>`;
+      }
+
+      function escapeHtml(s){
+        return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+      }
+    </script>
+  </body>
+  </html>

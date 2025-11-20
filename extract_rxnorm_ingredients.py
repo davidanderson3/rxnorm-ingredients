@@ -9,9 +9,13 @@ Usage:
   python extract_rxnorm_ingredients.py \
       --input RXNCONSO.RRF \
       --rel RXNREL.RRF \
-      --output rxnorm_ingredients.json
+      --sat RXNSAT.RRF \
+      --output rxnorm_ingredients.json \
+      --web-split web  # default
 
 Notes:
+  - Generates web assets into ./web by default (override with --web-split).
+  - Restricts to English names (LAT=ENG); no flag needed.
   - Expects the standard RXNCONSO field order used by RxNorm RRF files:
     [0] RXCUI, [1] LAT, [2] TS, [3] LUI, [4] STT, [5] SUI, [6] ISPREF,
     [7] RXAUI, [8] SAUI, [9] SCUI, [10] SDUI, [11] SAB, [12] TTY,
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Iterable, Dict, Any, Tuple, Set, List
 
@@ -42,8 +47,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sat", "-s", default="RXNSAT.RRF", help="Path to RXNSAT.RRF (default: RXNSAT.RRF)")
     p.add_argument("--output", "-o", default="rxnorm_ingredients.json", help="Path to write JSON (default: rxnorm_ingredients.json)")
     p.add_argument("--ndjson", action="store_true", help="Write newline-delimited JSON instead of a JSON array")
-    p.add_argument("--only-eng", action="store_true", help="Restrict to LAT=ENG (default: include all languages)")
-    p.add_argument("--web-split", default=None, help="Optional: output per-letter JSON chunks and manifest into this directory (e.g., web)")
+    p.add_argument(
+        "--web-split",
+        default="web",
+        help="Output per-letter JSON chunks and manifest into this directory (default: web)",
+    )
     return p.parse_args()
 
 
@@ -504,6 +512,7 @@ def write_web_split(data: List[Dict[str, Any]], out_dir: str) -> None:
 
 def main() -> int:
     args = parse_args()
+    only_eng = True  # RxNorm content is English; enforce without a flag
     try:
         (
             ingredients,
@@ -523,7 +532,7 @@ def main() -> int:
             sbd_set,
             bn_names,
             bn_set,
-        ) = scan_rxnconso(args.input, only_eng=args.only_eng)
+        ) = scan_rxnconso(args.input, only_eng=only_eng)
 
         ing_set = set(ingredients.keys())
         ing_to_scdc = scan_rxnrel_for_scdc(args.rel, ing_set, scdc_set, pin_set)
@@ -628,8 +637,18 @@ def main() -> int:
         write_json(output, args.output, ndjson=args.ndjson)
         if args.web_split:
             write_web_split(output, args.web_split)
-    except FileNotFoundError:
-        sys.stderr.write(f"Input file not found: {args.input}\n")
+    except FileNotFoundError as e:
+        missing = e.filename or args.input
+        cwd = os.getcwd()
+        sys.stderr.write(f"File not found: {missing}\n")
+        if missing == args.input:
+            sys.stderr.write(f"Expected RXNCONSO RRF. Place RXNCONSO.RRF in {cwd} or pass --input /path/to/RXNCONSO.RRF\n")
+        elif missing == args.rel:
+            sys.stderr.write(f"Expected relationship file RXNREL.RRF. Place it in {cwd} or pass --rel /path/to/RXNREL.RRF\n")
+        elif missing == args.sat:
+            sys.stderr.write(f"Expected attribute file RXNSAT.RRF. Place it in {cwd} or pass --sat /path/to/RXNSAT.RRF\n")
+        else:
+            sys.stderr.write("Required files: --input RXNCONSO.RRF, --rel RXNREL.RRF, --sat RXNSAT.RRF. Point each flag to the correct file.\n")
         return 1
     return 0
 

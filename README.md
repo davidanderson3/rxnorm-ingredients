@@ -1,11 +1,11 @@
 # RxNorm Ingredients Extractor
 
-This repository includes a Python script that builds an enriched, searchable list of RxNorm ingredients and related drug concepts from the RxNorm RRF files. It can also generate a small serverless web viewer for fast browsing.
+This repository includes a Python script that builds an enriched, searchable list of RxNorm ingredients and related drug concepts from the RxNorm RRF files. It also generates a small serverless web viewer for fast browsing.
 
 ## What it produces
 
 - A single JSON file (`rxnorm_ingredients.json`) containing enriched ingredient records.
-- Optional per-letter split JSON and a tiny web app under `web/` for fast, client‑side browsing.
+- Per-letter split JSON and a tiny web app under `web/` for fast, client‑side browsing (generated automatically).
 
 Each ingredient record includes:
 - Name, RXCUI, TTY (IN, PIN, or MIN)
@@ -77,10 +77,9 @@ All ingredient records are sorted by `Name` (case‑insensitive). Records withou
 
 ## Usage
 
-Generate the enriched JSON and optional web assets (English only):
+Generate the enriched JSON and web assets (defaults shown):
 ```
 python3 extract_rxnorm_ingredients.py \
-  --only-eng \
   --input RXNCONSO.RRF \
   --rel RXNREL.RRF \
   --sat RXNSAT.RRF \
@@ -90,11 +89,11 @@ python3 extract_rxnorm_ingredients.py \
 
 Other options:
 - `--ndjson` — write newline‑delimited JSON instead of a single array
-- `--only-eng` — restrict to English (`LAT=ENG`) names
+- `--web-split` — change the output directory for split web data (default: `web`)
 
 ## Serverless web viewer
 
-The `--web-split web` option generates:
+The script always generates:
 - `web/index.html` — a small, static single‑page viewer
 - `web/manifest.json` — a manifest of per‑letter data files
 - `web/data/*.json` — per‑letter data chunks (A–Z and 0–9) for fast loading
@@ -116,3 +115,4 @@ Features:
 
 - All selections obey `SUPPRESS='N'` for RXNORM concepts (IN/PIN/MIN/SCDC/SCD/GPCK/BPCK/SBD/BN).
 - UNIIs come from `MTHSPL|SU` rows where the RXCUI matches the ingredient concept.
+- Names are restricted to English (`LAT=ENG`) by default.
