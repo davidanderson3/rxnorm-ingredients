@@ -13,7 +13,6 @@ Notes:
   - Downloads https://download.nlm.nih.gov/rxnorm/RxNorm_full_prescribe_current.zip,
     extracts it into the current working directory, and reads the RRF files from the extracted tree.
   - Generates web assets into ./web by default.
-  - Restricts to English names (LAT=ENG); no flag needed.
   - Expects the standard RXNCONSO field order used by RxNorm RRF files:
     [0] RXCUI, [1] LAT, [2] TS, [3] LUI, [4] STT, [5] SUI, [6] ISPREF,
     [7] RXAUI, [8] SAUI, [9] SCUI, [10] SDUI, [11] SAB, [12] TTY,
@@ -562,7 +561,7 @@ def write_web_split(data: List[Dict[str, Any]], out_dir: str) -> None:
 
 def main() -> int:
     args = parse_args()
-    only_eng = True  # RxNorm content is English; enforce without a flag
+    only_eng = True  # enforce LAT=ENG filter
     output_path = "rxnorm_ingredients.json"
     web_split_dir = "web"
     input_path = rel_path = sat_path = ""
