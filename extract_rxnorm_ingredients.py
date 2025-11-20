@@ -7,11 +7,7 @@ Each SCDC item includes its SCDs as SCDs[].
 
 Usage:
   python extract_rxnorm_ingredients.py \
-      --input RXNCONSO.RRF \
-      --rel RXNREL.RRF \
-      --sat RXNSAT.RRF \
-      --output rxnorm_ingredients.json \
-      --web-split web  # default
+      --rrf-dir /path/to/rrf
 
 Notes:
   - Generates web assets into ./web by default (override with --web-split).
@@ -42,15 +38,10 @@ TARGET_TTYS = {"IN", "PIN", "MIN"}
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Extract RxNorm ingredient concepts from RXNCONSO.RRF")
-    p.add_argument("--input", "-i", default="RXNCONSO.RRF", help="Path to RXNCONSO.RRF (default: RXNCONSO.RRF)")
-    p.add_argument("--rel", "-r", default="RXNREL.RRF", help="Path to RXNREL.RRF (default: RXNREL.RRF)")
-    p.add_argument("--sat", "-s", default="RXNSAT.RRF", help="Path to RXNSAT.RRF (default: RXNSAT.RRF)")
-    p.add_argument("--output", "-o", default="rxnorm_ingredients.json", help="Path to write JSON (default: rxnorm_ingredients.json)")
-    p.add_argument("--ndjson", action="store_true", help="Write newline-delimited JSON instead of a JSON array")
     p.add_argument(
-        "--web-split",
-        default="web",
-        help="Output per-letter JSON chunks and manifest into this directory (default: web)",
+        "--rrf-dir",
+        required=True,
+        help="Directory containing RRF files (RXNCONSO.RRF, RXNREL.RRF, RXNSAT.RRF)",
     )
     return p.parse_args()
 
@@ -512,7 +503,12 @@ def write_web_split(data: List[Dict[str, Any]], out_dir: str) -> None:
 
 def main() -> int:
     args = parse_args()
+    input_path = os.path.join(args.rrf_dir, "RXNCONSO.RRF")
+    rel_path = os.path.join(args.rrf_dir, "RXNREL.RRF")
+    sat_path = os.path.join(args.rrf_dir, "RXNSAT.RRF")
     only_eng = True  # RxNorm content is English; enforce without a flag
+    output_path = "rxnorm_ingredients.json"
+    web_split_dir = "web"
     try:
         (
             ingredients,
@@ -532,11 +528,11 @@ def main() -> int:
             sbd_set,
             bn_names,
             bn_set,
-        ) = scan_rxnconso(args.input, only_eng=only_eng)
+        ) = scan_rxnconso(input_path, only_eng=only_eng)
 
         ing_set = set(ingredients.keys())
-        ing_to_scdc = scan_rxnrel_for_scdc(args.rel, ing_set, scdc_set, pin_set)
-        scdc_to_scds = scan_rxnrel_for_scds(args.rel, scdc_set, scd_set)
+        ing_to_scdc = scan_rxnrel_for_scdc(rel_path, ing_set, scdc_set, pin_set)
+        scdc_to_scds = scan_rxnrel_for_scds(rel_path, scdc_set, scd_set)
         # invert SCDC->SCDs to SCD->SCDC(s)
         scd_to_scdc: Dict[str, Set[str]] = {}
         for scdc, scds in scdc_to_scds.items():
@@ -544,19 +540,19 @@ def main() -> int:
                 scd_to_scdc.setdefault(scd, set()).add(scdc)
 
         pin_to_scdc, min_to_scdc = derive_pin_min_scdc(
-            args.rel, in_set, pin_set, min_set, ing_to_scdc, scd_set, scd_to_scdc
+            rel_path, in_set, pin_set, min_set, ing_to_scdc, scd_set, scd_to_scdc
         )
 
         # Packs and brands for SCDs
         scd_to_gpck, scd_to_bpck, scd_to_sbd = scan_rxnrel_for_packs_sbd(
-            args.rel, scd_set, gpck_set, bpck_set, sbd_set
+            rel_path, scd_set, gpck_set, bpck_set, sbd_set
         )
 
         # RXNORM NDCs from RXNSAT
-        cui_to_ndcs = scan_rxnsat_ndc_rxnorm(args.sat)
+        cui_to_ndcs = scan_rxnsat_ndc_rxnorm(sat_path)
 
         # SBD -> BN mapping
-        sbd_to_bn = scan_rxnrel_for_sbd_bn(args.rel, sbd_set, bn_set)
+        sbd_to_bn = scan_rxnrel_for_sbd_bn(rel_path, sbd_set, bn_set)
 
         # unify cui -> scdc set
         cui_to_scdc: Dict[str, Set[str]] = {}
@@ -634,21 +630,29 @@ def main() -> int:
             output.append(top)
 
         output.sort(key=lambda r: (r.get("Name") or "").lower())
-        write_json(output, args.output, ndjson=args.ndjson)
-        if args.web_split:
-            write_web_split(output, args.web_split)
+        write_json(output, output_path, ndjson=False)
+        write_web_split(output, web_split_dir)
     except FileNotFoundError as e:
-        missing = e.filename or args.input
+        missing = e.filename or input_path
         cwd = os.getcwd()
         sys.stderr.write(f"File not found: {missing}\n")
-        if missing == args.input:
-            sys.stderr.write(f"Expected RXNCONSO RRF. Place RXNCONSO.RRF in {cwd} or pass --input /path/to/RXNCONSO.RRF\n")
-        elif missing == args.rel:
-            sys.stderr.write(f"Expected relationship file RXNREL.RRF. Place it in {cwd} or pass --rel /path/to/RXNREL.RRF\n")
-        elif missing == args.sat:
-            sys.stderr.write(f"Expected attribute file RXNSAT.RRF. Place it in {cwd} or pass --sat /path/to/RXNSAT.RRF\n")
+        if missing == input_path:
+            sys.stderr.write(
+                f"Expected RXNCONSO.RRF under --rrf-dir. Place RXNCONSO.RRF in {args.rrf_dir} "
+                f"(current working directory: {cwd})\n"
+            )
+        elif missing == rel_path:
+            sys.stderr.write(
+                f"Expected RXNREL.RRF under --rrf-dir. Place RXNREL.RRF in {args.rrf_dir} "
+                f"(current working directory: {cwd})\n"
+            )
+        elif missing == sat_path:
+            sys.stderr.write(
+                f"Expected RXNSAT.RRF under --rrf-dir. Place RXNSAT.RRF in {args.rrf_dir} "
+                f"(current working directory: {cwd})\n"
+            )
         else:
-            sys.stderr.write("Required files: --input RXNCONSO.RRF, --rel RXNREL.RRF, --sat RXNSAT.RRF. Point each flag to the correct file.\n")
+            sys.stderr.write("Required files: RXNCONSO.RRF, RXNREL.RRF, RXNSAT.RRF inside --rrf-dir.\n")
         return 1
     return 0
 

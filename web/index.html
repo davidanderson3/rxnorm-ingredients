@@ -184,7 +184,7 @@
       function renderScdcCol(){
         const r = state.selected;
         if(!r || !r.SCDCs || !r.SCDCs.length){ scdcCol.innerHTML = '<span class="muted">Select an ingredient from the list.</span>'; return; }
-        let html = `<h3>SCDCs (Semantic Clinical Drug Components)</h3><ul class="list">`;
+        let html = `<h3>SCDCs (Semantic Clinical Drug Components)</h3><div class="muted">(ingredient + strength)</div><ul class="list">`;
         r.SCDCs.forEach(scdc=>{
           const active = state.selectedScdc && state.selectedScdc.RXCUI===scdc.RXCUI;
           html += `<li class="${active?'active':''}" data-rxcui="${scdc.RXCUI}"><div><strong>${escapeHtml(scdc.Name)}</strong> <span class="pill">${scdc.TTY}</span></div>
@@ -208,7 +208,7 @@
         const scdc = state.selectedScdc;
         if(!scdc){ scdCol.innerHTML = '<span class="muted">Pick an SCDC to see SCDs.</span>'; return; }
         const scds = scdc.SCDs || [];
-        let html = `<h3>SCDs (${scds.length})</h3><ul class="list">`;
+        let html = `<h3>SCDs (${scds.length})</h3><div class="muted">(ingredient + strength + dose form)</div><ul class="list">`;
         scds.forEach(scd=>{
           const active = state.selectedScd && state.selectedScd.RXCUI===scd.RXCUI;
           html += `<li class="${active?'active':''}" data-rxcui="${scd.RXCUI}"><div><strong>${escapeHtml(scd.Name)}</strong> <span class="pill">${scd.TTY}</span></div>
@@ -251,7 +251,13 @@
           if(scd.BPCKs){ parts.push(renderPackList('BPCK', scd.BPCKs)); }
           parts.push(`</details>`);
         }
-        parts.push(`<h3>SBDs (${(scd.SBDs||[]).length})</h3>`);
+        const sbdCount = (scd.SBDs||[]).length;
+        parts.push(`<h3>SBDs (${sbdCount})</h3><div class="muted">(ingredient + strength + dose form + [brand name])</div>`);
+        if(!sbdCount){
+          parts.push('<div class="muted">No SBDs.</div>');
+          sbdCol.innerHTML = parts.join('');
+          return;
+        }
         (scd.SBDs||[]).forEach(b=>{
           let html = `<div class="card"><div class="line"><strong>${escapeHtml(b.Name)}</strong><span class="pill">${b.TTY}</span></div>`;
           html += `<div class="mono muted"><strong>RXCUI</strong> ${b.RXCUI}</div>`;
