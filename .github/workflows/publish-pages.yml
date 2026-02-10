@@ -18,6 +18,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.change-check.outputs.changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,13 +29,54 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Download Current RxNorm ZIP + Hash
+        id: hash
+        run: |
+          set -euo pipefail
+          URL="https://download.nlm.nih.gov/rxnorm/RxNorm_full_prescribe_current.zip"
+          curl -L -o /tmp/rxnorm.zip "$URL"
+          SHA="$(sha256sum /tmp/rxnorm.zip | awk '{print $1}')"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Hash Cache
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/rxnorm_hash.txt
+          key: rxnorm-${{ steps.hash.outputs.sha }}
+
+      - name: Decide Whether To Rebuild
+        id: change-check
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.cache-restore.outputs.cache-hit }}" = "true" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No new RxNorm release detected; skipping build."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save Hash Cache
+        if: steps.cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/rxnorm_hash.txt
+          key: rxnorm-${{ steps.hash.outputs.sha }}
+
       - name: Build Web Assets
-        run: python3 extract_rxnorm_ingredients.py --no-serve
+        if: steps.change-check.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .cache
+          echo "${{ steps.hash.outputs.sha }}" > .cache/rxnorm_hash.txt
+          python3 extract_rxnorm_ingredients.py --no-serve
 
       - name: Configure Pages
+        if: steps.change-check.outputs.changed == 'true'
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
+        if: steps.change-check.outputs.changed == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: web
@@ -41,6 +84,7 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    if: needs.build.outputs.changed == 'true'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
