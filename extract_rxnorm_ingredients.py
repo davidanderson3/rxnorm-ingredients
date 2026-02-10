@@ -54,6 +54,11 @@ def parse_args() -> argparse.Namespace:
         "--rrf-dir",
         help="Directory containing RXNCONSO.RRF, RXNREL.RRF, RXNSAT.RRF. If omitted, downloads the current RxNorm prescribe ZIP.",
     )
+    p.add_argument(
+        "--no-serve",
+        action="store_true",
+        help="Do not start the local HTTP server or open a browser window.",
+    )
     return p.parse_args()
 
 
@@ -701,25 +706,26 @@ def main() -> int:
         write_web_split(output, web_split_dir)
         print(f"Wrote {output_path} and web assets in {web_split_dir}/", file=sys.stderr)
 
-        # Serve the web UI and open in browser
-        try:
-            httpd, port = start_http_server(directory=".")
-            url = f"http://127.0.0.1:{port}/web/"
-            print(f"Serving ./web via http://127.0.0.1:{port}/web/ (Ctrl+C to stop)", file=sys.stderr)
-            webbrowser.open(url)
-            # Run the server until interrupted
-            thread = Thread(target=httpd.serve_forever, daemon=True)
-            thread.start()
-            while True:
-                sleep(1)
-        except KeyboardInterrupt:
-            print("Stopping server...", file=sys.stderr)
+        if not args.no_serve:
+            # Serve the web UI and open in browser
             try:
-                httpd.shutdown()
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"Could not start HTTP server: {e}", file=sys.stderr)
+                httpd, port = start_http_server(directory=".")
+                url = f"http://127.0.0.1:{port}/web/"
+                print(f"Serving ./web via http://127.0.0.1:{port}/web/ (Ctrl+C to stop)", file=sys.stderr)
+                webbrowser.open(url)
+                # Run the server until interrupted
+                thread = Thread(target=httpd.serve_forever, daemon=True)
+                thread.start()
+                while True:
+                    sleep(1)
+            except KeyboardInterrupt:
+                print("Stopping server...", file=sys.stderr)
+                try:
+                    httpd.shutdown()
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"Could not start HTTP server: {e}", file=sys.stderr)
     except FileNotFoundError as e:
         missing = e.filename or input_path
         sys.stderr.write(f"File not found after download/extract: {missing}\n")
