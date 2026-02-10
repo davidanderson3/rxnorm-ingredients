@@ -9,6 +9,7 @@
       html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif}
       header{padding:12px 16px;border-bottom:1px solid #e5e8f0;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
       h1{font-size:16px;margin:0}
+      h3{font-size:16px;margin:0}
       .letters{display:flex;gap:6px;flex-wrap:wrap}
       .letters button{padding:6px 9px;border:1px solid #d7dbe6;background:#fff;border-radius:6px;cursor:pointer}
       .letters button.active{background:var(--chip);border-color:var(--hl);color:var(--hl)}
@@ -37,6 +38,9 @@
       .list li{padding:8px 10px;border-bottom:1px solid #f0f2f7;cursor:pointer}
       .list li.active{background:#f6f8fe}
       .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+      .section-head{margin:8px 0 6px;padding:8px 10px;border:1px solid #e5e8f0;border-radius:8px;background:#f7f9ff}
+      .section-head h3{font-weight:700}
+      .section-sub{color:var(--muted);margin-top:2px}
       .chip-link{font-size:12px;padding:2px 6px;border-radius:999px;border:1px solid #b9c6f8;background:#eef3ff;color:#2a56cc;text-decoration:none}
     </style>
   </head>
@@ -184,7 +188,7 @@
       function renderScdcCol(){
         const r = state.selected;
         if(!r || !r.SCDCs || !r.SCDCs.length){ scdcCol.innerHTML = '<span class="muted">Select an ingredient from the list.</span>'; return; }
-        let html = `<h3>SCDCs (Semantic Clinical Drug Components)</h3><div class="muted">(ingredient + strength)</div><ul class="list">`;
+        let html = `<div class="section-head"><h3>SCDCs (Semantic Clinical Drug Components)</h3><div class="section-sub">(ingredient + strength)</div></div><ul class="list">`;
         r.SCDCs.forEach(scdc=>{
           const active = state.selectedScdc && state.selectedScdc.RXCUI===scdc.RXCUI;
           html += `<li class="${active?'active':''}" data-rxcui="${scdc.RXCUI}"><div><strong>${escapeHtml(scdc.Name)}</strong> <span class="pill">${scdc.TTY}</span></div>
@@ -208,7 +212,7 @@
         const scdc = state.selectedScdc;
         if(!scdc){ scdCol.innerHTML = '<span class="muted">Pick an SCDC to see SCDs.</span>'; return; }
         const scds = scdc.SCDs || [];
-        let html = `<h3>SCDs (${scds.length})</h3><div class="muted">(ingredient + strength + dose form)</div><ul class="list">`;
+        let html = `<div class="section-head"><h3>SCDs (${scds.length})</h3><div class="section-sub">(ingredient + strength + dose form)</div></div><ul class="list">`;
         scds.forEach(scd=>{
           const active = state.selectedScd && state.selectedScd.RXCUI===scd.RXCUI;
           html += `<li class="${active?'active':''}" data-rxcui="${scd.RXCUI}"><div><strong>${escapeHtml(scd.Name)}</strong> <span class="pill">${scd.TTY}</span></div>
@@ -222,14 +226,21 @@
             const urlS = buildDailyMedSearchUrl(scd.SPL_SET_IDs, null);
             html += `<details><summary>SPL Set IDs</summary><div class="mono">${scd.SPL_SET_IDs.join(', ')}</div><div><a href="${urlS}" target="_blank" rel="noopener">DailyMed</a></div></details>`;
           }
-          if(scd.GPCKs || scd.BPCKs){
-            const gp = scd.GPCKs? scd.GPCKs.length : 0; const bp = scd.BPCKs? scd.BPCKs.length : 0;
-            html += `<div class="muted">Packs: GPCK ${gp}${gp||bp?', ':''}BPCK ${bp}</div>`;
-          }
-          
           html += `</li>`;
         });
         html += `</ul>`;
+        // GPCKs section (not tied to a specific SCD)
+        const gpckMap = new Map();
+        scds.forEach(s=>{
+          (s.GPCKs||[]).forEach(p=>{
+            gpckMap.set(p.RXCUI, p);
+          });
+        });
+        if(gpckMap.size){
+          const gpcks = Array.from(gpckMap.values()).sort((a,b)=> (a.Name||'').localeCompare(b.Name||''));
+          html += `<div class="section-head"><h3>GPCKs (${gpcks.length})</h3><div class="section-sub">{X (ingredient + strength + dose form) / Y (ingredient + strength + dose form)} Pack. X and Y are quantities (e.g., number of pills for each product).</div></div>`;
+          html += renderPackListBare(gpcks);
+        }
         scdCol.innerHTML = html;
         scdCol.querySelectorAll('li').forEach(li=>{
           li.onclick = ()=>{
@@ -238,21 +249,34 @@
             renderScdCol(); renderSbdCol();
           };
         });
+        // Keep details toggles from re-selecting the SCD and re-rendering
+        scdCol.querySelectorAll('details, summary').forEach(el=>{
+          el.addEventListener('click', (e)=> e.stopPropagation());
+        });
       }
 
       function renderSbdCol(){
         const scd = state.selectedScd;
-        if(!scd){ sbdCol.innerHTML = '<span class="muted">Pick an SCD to see SBDs.</span>'; return; }
-        const parts = [];
-        // Packs
-        if(scd.GPCKs || scd.BPCKs){
-          parts.push(`<details open><summary>Packs</summary>`);
-          if(scd.GPCKs){ parts.push(renderPackList('GPCK', scd.GPCKs)); }
-          if(scd.BPCKs){ parts.push(renderPackList('BPCK', scd.BPCKs)); }
-          parts.push(`</details>`);
+        if(!scd){
+          const scdc = state.selectedScdc;
+          if(!scdc){ sbdCol.innerHTML = '<span class="muted">Pick an SCD to see SBDs.</span>'; return; }
+          const parts = [];
+          let any = false;
+          (scdc.SCDs||[]).forEach(s=>{
+            if(s.BPCKs && s.BPCKs.length){
+              if(!any){ parts.push(`<div class="section-head"><h3>BPCKs</h3><div class="section-sub">{X (ingredient + strength + dose form) / Y (ingredient + strength + dose form)} Pack [brand name]. X and Y are quantities (e.g., number of pills for each product).</div></div>`); }
+              any = true;
+              parts.push(`<div class="muted"><strong>${escapeHtml(s.Name)}</strong></div>`);
+              parts.push(renderPackListBare(s.BPCKs));
+            }
+          });
+          parts.push('<div class="muted">Select an SCD to see SBDs.</div>');
+          sbdCol.innerHTML = parts.join('\n');
+          return;
         }
+        const parts = [];
         const sbdCount = (scd.SBDs||[]).length;
-        parts.push(`<h3>SBDs (${sbdCount})</h3><div class="muted">(ingredient + strength + dose form + [brand name])</div>`);
+        parts.push(`<div class="section-head"><h3>SBDs (${sbdCount})</h3><div class="section-sub">(ingredient + strength + dose form + [brand name])</div></div>`);
         if(!sbdCount){
           parts.push('<div class="muted">No SBDs.</div>');
           sbdCol.innerHTML = parts.join('');
@@ -286,11 +310,34 @@
           html += `</div>`;
           parts.push(html);
         });
+        // BPCKs section under SBDs
+        if(scd.BPCKs && scd.BPCKs.length){
+          parts.push(`<div class="section-head"><h3>BPCKs (${scd.BPCKs.length})</h3><div class="section-sub">{X (ingredient + strength + dose form) / Y (ingredient + strength + dose form)} Pack [brand name]. X and Y are quantities (e.g., number of pills for each product).</div></div>`);
+          parts.push(renderPackListBare(scd.BPCKs));
+        }
         sbdCol.innerHTML = parts.join('\n');
       }
 
       function renderPackList(label, arr){
         let html = `<div class="muted"><strong>${label}s</strong></div><ul class="list">`;
+        arr.forEach(p=>{
+          html += `<li><div>${escapeHtml(p.Name)} <span class="pill">${p.TTY}</span></div>
+                   <div class="mono muted"><strong>RXCUI</strong> ${p.RXCUI}</div>`;
+          if(p.NDCs && p.NDCs.length){
+            const urlN = buildDailyMedSearchUrl(null, p.NDCs);
+            html += `<details><summary>NDCs</summary><div class=\"mono\">${p.NDCs.join(', ')}</div><div><a href=\"${urlN}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+          }
+          if(p.SPL_SET_IDs && p.SPL_SET_IDs.length){
+            const urlS = buildDailyMedSearchUrl(p.SPL_SET_IDs, null);
+            html += `<details><summary>SPL Set IDs</summary><div class=\"mono\">${p.SPL_SET_IDs.join(', ')}</div><div><a href=\"${urlS}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+          }
+          html += `</li>`;
+        });
+        html += `</ul>`;
+        return html;
+      }
+      function renderPackListBare(arr){
+        let html = `<ul class="list">`;
         arr.forEach(p=>{
           html += `<li><div>${escapeHtml(p.Name)} <span class="pill">${p.TTY}</span></div>
                    <div class="mono muted"><strong>RXCUI</strong> ${p.RXCUI}</div>`;
