@@ -1,0 +1,67 @@
+{
+  "ingredient": {
+    "name": "metformin", "rxcui": "6809", "tty": "IN",
+    "semantic_clinical_drug_components": [
+      {
+        "name": "metformin hydrochloride 100 MG/ML", "rxcui": "861024", "tty": "SCDC",
+        "clinical_drug_components": [],
+        "semantic_clinical_drugs": [
+          {
+            "name": "metformin hydrochloride 100 MG/ML Oral Solution", "rxcui": "861025", "tty": "SCD",
+            "prescribable_names": ["metFORMIN HCl 500 MG in 5 mL Oral Solution"],
+            "synonyms": ["metformin hydrochloride 500 MG per 5 ML Oral Solution"],
+            "ndcs": ["31722004247", "42571036007", "42571036010", "52817082005"],
+            "semantic_clinical_drug_forms": [
+              {
+                "name": "metformin Oral Solution", "rxcui": "406082", "tty": "SCDF",
+                "dose_forms": [
+                  { "name": "Oral Solution", "rxcui": "316968", "tty": "DF" }
+                ]
+              }
+            ],
+            "semantic_clinical_drug_groups": [
+              {
+                "name": "metformin Oral Liquid Product", "rxcui": "1161609", "tty": "SCDG",
+                "dose_form_groups": [
+                  { "name": "Oral Liquid Product", "rxcui": "1151137", "tty": "DFG" }
+                ]
+              },
+              {
+                "name": "metformin Oral Product", "rxcui": "1161610", "tty": "SCDG",
+                "dose_form_groups": [
+                  { "name": "Oral Product", "rxcui": "1151131", "tty": "DFG" }
+                ]
+              }
+            ],
+            "generic_packs": [], "branded_packs": [],
+            "semantic_branded_drugs": [
+              {
+                "name": "metformin hydrochloride 100 MG/ML Oral Solution [Riomet]", "rxcui": "861027", "tty": "SBD",
+                "prescribable_names": ["Riomet 500 MG in 5 mL Oral Solution"],
+                "synonyms": ["Riomet 100 MG/ML Oral Solution", "Riomet 500 MG per 5 ML Oral Solution"],
+                "ndcs": ["10631020601", "10631020602", "10631023801", "10631023802"],
+                "semantic_branded_drug_groups": [
+                  {
+                    "name": "Riomet Oral Liquid Product", "rxcui": "1185325", "tty": "SBDG",
+                    "dose_form_groups": [
+                      { "name": "Oral Liquid Product", "rxcui": "1151137", "tty": "DFG" }
+                    ]
+                  },
+                  {
+                    "name": "Riomet Oral Product", "rxcui": "1185326", "tty": "SBDG",
+                    "dose_form_groups": [
+                      { "name": "Oral Product", "rxcui": "1151131", "tty": "DFG" }
+                    ]
+                  }
+                ],
+                "brand_names": [
+                  { "name": "Riomet", "rxcui": "405304", "tty": "BN" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
