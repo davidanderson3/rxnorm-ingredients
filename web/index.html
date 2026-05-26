@@ -53,6 +53,11 @@
       .rxnav-link{color:var(--hl);text-decoration:none}
       .rxnav-link:hover{text-decoration:underline}
       .subtle-rule{border:0;border-top:1px solid #e5e8f0;margin:10px 0 8px}
+      .sql-panel{border-top:1px solid #dfe4ee;background:#fbfcff;padding:12px 16px 16px}
+      .sql-toolbar{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:8px}
+      .sql-toolbar button{padding:6px 10px;border:1px solid #ccd3e0;border-radius:6px;background:#fff;cursor:pointer;white-space:nowrap}
+      .sql-toolbar button:disabled{cursor:not-allowed;color:#99a;background:#f7f8fb}
+      #sqlQuery{box-sizing:border-box;width:100%;min-height:80px;overflow:hidden;resize:none;border:1px solid #ccd3e0;border-radius:6px;background:#fff;color:#182033;padding:10px;font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
     </style>
   </head>
   <body>
@@ -81,6 +86,16 @@
         <div id="sbdCol" class="muted">SBDs will appear here.</div>
       </section>
     </main>
+    <div class="sql-panel">
+      <div class="sql-toolbar">
+        <div>
+          <h3>Oracle SQL</h3>
+          <div id="sqlSummary" class="section-sub">Select an ingredient to generate a UNII to NDC query.</div>
+        </div>
+        <button id="copySql" type="button" disabled>Copy SQL</button>
+      </div>
+      <textarea id="sqlQuery" readonly spellcheck="false">Select an ingredient to generate a query.</textarea>
+    </div>
     <script>
       const state = { manifest:null, bucketKey:null, records:[], filtered:[], selected:null, selectedScdc:null, selectedScd:null };
       const lettersEl = document.getElementById('letters');
@@ -91,6 +106,9 @@
       const countEl = document.getElementById('count');
       const qEl = document.getElementById('q');
       const versionEl = document.getElementById('version');
+      const sqlSummaryEl = document.getElementById('sqlSummary');
+      const sqlQueryEl = document.getElementById('sqlQuery');
+      const copySqlBtn = document.getElementById('copySql');
 
       fetch('manifest.json').then(r=>r.json()).then(async mf=>{
         state.manifest = mf;
@@ -120,6 +138,28 @@
           versionEl.textContent = label;
         }
       }).catch(()=>{});
+
+      window.addEventListener('resize', resizeSqlQuery);
+
+      copySqlBtn.addEventListener('click', async ()=>{
+        const sql = sqlQueryEl.value || '';
+        if(!sql || copySqlBtn.disabled) return;
+        try {
+          if(navigator.clipboard && navigator.clipboard.writeText){
+            await navigator.clipboard.writeText(sql);
+          } else {
+            sqlQueryEl.focus();
+            sqlQueryEl.select();
+            document.execCommand('copy');
+          }
+          const old = copySqlBtn.textContent;
+          copySqlBtn.textContent = 'Copied';
+          setTimeout(()=>{ copySqlBtn.textContent = old; }, 1200);
+        } catch {
+          sqlQueryEl.focus();
+          sqlQueryEl.select();
+        }
+      });
 
       function renderLetters(mf){
         lettersEl.innerHTML = '';
@@ -205,7 +245,7 @@
         if(!opts.preserveQuery){ qEl.value=''; }
         filterRecords();
         restoreSelections(opts.restore);
-        renderList(); renderScdcCol(); renderScdCol(); renderSbdCol();
+        renderList(); renderScdcCol(); renderScdCol(); renderSbdCol(); renderSqlPanel();
         if(opts.updateUrl !== false){ updateUrlState(); }
       }
 
@@ -261,7 +301,7 @@
               listEl.querySelectorAll('li').forEach(el=>{
                 el.classList.toggle('active', el.dataset.rxcui === r.RXCUI);
               });
-              renderScdcCol(); renderScdCol(); renderSbdCol();
+              renderScdcCol(); renderScdCol(); renderSbdCol(); renderSqlPanel();
               updateUrlState();
               try { window.scrollTo(0, 0); } catch {}
             };
@@ -292,7 +332,7 @@
             // If only one SCD under this SCDC, auto-select it; otherwise clear
             const scds = (state.selectedScdc && state.selectedScdc.SCDs) || [];
             state.selectedScd = (scds.length === 1) ? scds[0] : null;
-            renderScdcCol(); renderScdCol(); renderSbdCol();
+            renderScdcCol(); renderScdCol(); renderSbdCol(); renderSqlPanel();
             updateUrlState();
           };
         });
@@ -336,7 +376,7 @@
           li.onclick = ()=>{
             const cui = li.getAttribute('data-rxcui');
             state.selectedScd = (scdc.SCDs||[]).find(x=>x.RXCUI===cui) || null;
-            renderScdCol(); renderSbdCol();
+            renderScdCol(); renderSbdCol(); renderSqlPanel();
             updateUrlState();
           };
         });
@@ -472,6 +512,330 @@
         });
         html += `</ul>`;
         return html;
+      }
+
+      function renderSqlPanel(){
+        if(!state.selected){
+          sqlSummaryEl.textContent = 'Select an ingredient to generate a UNII to NDC query.';
+          sqlQueryEl.value = 'Select an ingredient to generate a query.';
+          resizeSqlQuery();
+          copySqlBtn.disabled = true;
+          return;
+        }
+        sqlSummaryEl.textContent = buildSqlSummary();
+        sqlQueryEl.value = buildSqlQuery();
+        resizeSqlQuery();
+        copySqlBtn.disabled = false;
+      }
+
+      function resizeSqlQuery(){
+        sqlQueryEl.style.height = 'auto';
+        sqlQueryEl.style.height = `${sqlQueryEl.scrollHeight + 2}px`;
+      }
+
+      function buildSqlSummary(){
+        const parts = [];
+        const ing = state.selected;
+        parts.push(`${ing.UNII ? `UNII ${ing.UNII}` : 'No UNII on selected ingredient'}`);
+        parts.push(`${ing.TTY} ${ing.RXCUI}`);
+        if(state.selectedScdc){ parts.push(`SCDC ${state.selectedScdc.RXCUI}`); }
+        if(state.selectedScd){ parts.push(`SCD ${state.selectedScd.RXCUI}`); }
+        return parts.join(' · ');
+      }
+
+      function sqlLiteral(value){
+        if(value === null || value === undefined || value === '') return 'cast(null as varchar2(64))';
+        return `'${String(value).replace(/'/g, "''")}'`;
+      }
+
+      function sqlComment(value){
+        return String(value || '').replace(/[\r\n]+/g, ' ').replace(/\*\//g, '');
+      }
+
+      function buildSqlQuery(){
+        const ing = state.selected;
+        const scdc = state.selectedScdc;
+        const scd = state.selectedScd;
+        return String.raw`-- Generated by RxNorm Ingredients Browser.
+-- Current state: ${sqlComment(ing.Name)} (${ing.TTY} ${ing.RXCUI})${ing.UNII ? `, UNII ${sqlComment(ing.UNII)}` : ''}${scdc ? `, SCDC ${sqlComment(scdc.RXCUI)}` : ''}${scd ? `, SCD ${sqlComment(scd.RXCUI)}` : ''}
+-- Oracle over RxNorm RRF tables: RXNCONSO, RXNREL, RXNSAT.
+
+with
+params as (
+  select ${sqlLiteral(ing.UNII)} as unii,
+         ${sqlLiteral(ing.RXCUI)} as ingredient_rxcui,
+         ${sqlLiteral(scdc && scdc.RXCUI)} as scdc_rxcui,
+         ${sqlLiteral(scd && scd.RXCUI)} as scd_rxcui
+  from dual
+),
+term_rows as (
+  select rxcui, tty, str as name,
+         row_number() over (
+           partition by rxcui, tty
+           order by case when ts = 'P' then 0 else 1 end, rxaui, str
+         ) rn
+  from rxnconso
+  where sab = 'RXNORM'
+    and suppress = 'N'
+    and lat = 'ENG'
+    and tty in ('IN','PIN','MIN','SCDC','SCD','GPCK','BPCK','SBD')
+),
+concepts as (
+  select rxcui, tty, name
+  from term_rows
+  where rn = 1
+),
+unii_map as (
+  select rxcui, min(code) keep (dense_rank first order by code) as unii
+  from rxnconso
+  where sab = 'MTHSPL'
+    and tty = 'SU'
+    and code is not null
+  group by rxcui
+),
+ingredients as (
+  select c.rxcui, c.tty, c.name, u.unii
+  from concepts c
+  left join unii_map u on u.rxcui = c.rxcui
+  cross join params p
+  where c.tty in ('IN','PIN','MIN')
+    and (p.unii is not null or p.ingredient_rxcui is not null)
+    and (p.unii is null or upper(u.unii) = upper(p.unii))
+    and (p.ingredient_rxcui is null or c.rxcui = p.ingredient_rxcui)
+),
+edges as (
+  select r.rxcui1, r.rxcui2, r.rela,
+         c1.tty as tty1, c2.tty as tty2
+  from rxnrel r
+  join concepts c1 on c1.rxcui = r.rxcui1
+  join concepts c2 on c2.rxcui = r.rxcui2
+  where r.sab = 'RXNORM'
+    and r.stype1 = 'CUI'
+    and r.stype2 = 'CUI'
+),
+ing_to_scdc_direct as (
+  select distinct e.rxcui1 ingredient_rxcui, e.rxcui2 scdc_rxcui, e.rela
+  from edges e
+  where e.rela in ('has_ingredient','ingredient_of')
+    and e.tty1 in ('IN','PIN','MIN')
+    and e.tty2 = 'SCDC'
+  union
+  select distinct e.rxcui2, e.rxcui1, e.rela
+  from edges e
+  where e.rela in ('has_ingredient','ingredient_of')
+    and e.tty2 in ('IN','PIN','MIN')
+    and e.tty1 = 'SCDC'
+  union
+  select distinct e.rxcui1, e.rxcui2, e.rela
+  from edges e
+  where e.rela in ('has_precise_ingredient','precise_ingredient_of')
+    and e.tty1 = 'PIN'
+    and e.tty2 = 'SCDC'
+  union
+  select distinct e.rxcui2, e.rxcui1, e.rela
+  from edges e
+  where e.rela in ('has_precise_ingredient','precise_ingredient_of')
+    and e.tty2 = 'PIN'
+    and e.tty1 = 'SCDC'
+),
+scdc_to_scd as (
+  select distinct e.rxcui2 scdc_rxcui, e.rxcui1 scd_rxcui
+  from edges e
+  where e.rela = 'constitutes' and e.tty1 = 'SCD' and e.tty2 = 'SCDC'
+  union
+  select distinct e.rxcui1, e.rxcui2
+  from edges e
+  where e.rela = 'constitutes' and e.tty1 = 'SCDC' and e.tty2 = 'SCD'
+),
+scd_to_scdc as (
+  select scd_rxcui, scdc_rxcui from scdc_to_scd
+),
+pin_to_scdc_inherited as (
+  select distinct e.rxcui2 ingredient_rxcui, d.scdc_rxcui
+  from edges e
+  join ing_to_scdc_direct d on d.ingredient_rxcui = e.rxcui1
+  join concepts ci on ci.rxcui = d.ingredient_rxcui and ci.tty = 'IN'
+  where e.rela in ('has_precise_ingredient','precise_ingredient_of')
+    and e.tty1 = 'IN' and e.tty2 = 'PIN'
+  union
+  select distinct e.rxcui1, d.scdc_rxcui
+  from edges e
+  join ing_to_scdc_direct d on d.ingredient_rxcui = e.rxcui2
+  join concepts ci on ci.rxcui = d.ingredient_rxcui and ci.tty = 'IN'
+  where e.rela in ('has_precise_ingredient','precise_ingredient_of')
+    and e.tty2 = 'IN' and e.tty1 = 'PIN'
+),
+min_to_scdc as (
+  select distinct e.rxcui1 ingredient_rxcui, d.scdc_rxcui
+  from edges e
+  join ing_to_scdc_direct d on d.ingredient_rxcui = e.rxcui2
+  where e.rela in ('has_ingredient','has_ingredients','ingredients_of')
+    and e.tty1 = 'MIN' and e.tty2 = 'IN'
+  union
+  select distinct e.rxcui2, d.scdc_rxcui
+  from edges e
+  join ing_to_scdc_direct d on d.ingredient_rxcui = e.rxcui1
+  where e.rela in ('has_ingredient','has_ingredients','ingredients_of')
+    and e.tty2 = 'MIN' and e.tty1 = 'IN'
+  union
+  select distinct e.rxcui1, s.scdc_rxcui
+  from edges e
+  join scd_to_scdc s on s.scd_rxcui = e.rxcui2
+  where e.rela in ('has_ingredient','has_ingredients','ingredients_of')
+    and e.tty1 = 'MIN' and e.tty2 = 'SCD'
+  union
+  select distinct e.rxcui2, s.scdc_rxcui
+  from edges e
+  join scd_to_scdc s on s.scd_rxcui = e.rxcui1
+  where e.rela in ('has_ingredient','has_ingredients','ingredients_of')
+    and e.tty2 = 'MIN' and e.tty1 = 'SCD'
+),
+in_pin_forms as (
+  select distinct e.rxcui1 in_rxcui, e.rxcui2 pin_rxcui
+  from edges e
+  where e.rela in ('form_of','has_form')
+    and e.tty1 = 'IN' and e.tty2 = 'PIN'
+  union
+  select distinct e.rxcui2, e.rxcui1
+  from edges e
+  where e.rela in ('form_of','has_form')
+    and e.tty2 = 'IN' and e.tty1 = 'PIN'
+),
+boss_from as (
+  select rxcui product_rxcui,
+         regexp_substr(atv, '\{([^}]+)\}', 1, 1, null, 1) scdc_rxcui,
+         regexp_substr(atv, '\}[[:space:]]+([A-Z]+)', 1, 1, null, 1) basis
+  from rxnsat
+  where sab = 'RXNORM'
+    and atn = 'RXN_BOSS_FROM'
+    and suppress = 'N'
+),
+product_terms as (
+  select distinct rxcui product_rxcui,
+         trim(regexp_replace(regexp_replace(lower(str), '[^a-z0-9]+', ' '), ' +', ' ')) term_key
+  from rxnconso
+  where suppress = 'N'
+    and sab in ('RXNORM','MTHSPL')
+    and str is not null
+),
+pin_names as (
+  select rxcui pin_rxcui,
+         trim(regexp_replace(regexp_replace(lower(name), '[^a-z0-9]+', ' '), ' +', ' ')) pin_key
+  from concepts
+  where tty = 'PIN'
+),
+scdc_to_ins as (
+  select distinct d.scdc_rxcui, d.ingredient_rxcui in_rxcui
+  from ing_to_scdc_direct d
+  join concepts c on c.rxcui = d.ingredient_rxcui and c.tty = 'IN'
+),
+scdc_to_pins as (
+  select distinct d.scdc_rxcui, d.ingredient_rxcui pin_rxcui
+  from ing_to_scdc_direct d
+  join concepts c on c.rxcui = d.ingredient_rxcui and c.tty = 'PIN'
+),
+boss_pin_to_scdc as (
+  select distinct f.pin_rxcui ingredient_rxcui, b.scdc_rxcui
+  from boss_from b
+  join scdc_to_ins si on si.scdc_rxcui = b.scdc_rxcui
+  join in_pin_forms f on f.in_rxcui = si.in_rxcui
+  join pin_names pn on pn.pin_rxcui = f.pin_rxcui
+  join product_terms pt on pt.product_rxcui = b.product_rxcui
+  where b.basis = 'AM'
+    and instr(pt.term_key, pn.pin_key) > 0
+),
+boss_in_to_scdc as (
+  select distinct f.in_rxcui ingredient_rxcui, b.scdc_rxcui
+  from boss_from b
+  join scdc_to_pins sp on sp.scdc_rxcui = b.scdc_rxcui
+  join in_pin_forms f on f.pin_rxcui = sp.pin_rxcui
+  where b.basis = 'AI'
+),
+ingredient_to_scdc as (
+  select d.ingredient_rxcui, d.scdc_rxcui, 'direct ' || d.rela as ingredient_path
+  from ing_to_scdc_direct d
+  join concepts c on c.rxcui = d.ingredient_rxcui and c.tty in ('IN','PIN')
+  union
+  select ingredient_rxcui, scdc_rxcui, 'pin inherited from IN precise ingredient'
+  from pin_to_scdc_inherited
+  union
+  select ingredient_rxcui, scdc_rxcui, 'min inherited from IN/SCD ingredient'
+  from min_to_scdc
+  union
+  select ingredient_rxcui, scdc_rxcui, 'BoSS AM matched PIN form'
+  from boss_pin_to_scdc
+  union
+  select ingredient_rxcui, scdc_rxcui, 'BoSS AI propagated to IN form'
+  from boss_in_to_scdc
+),
+ndc_values as (
+  select distinct rxcui, atv ndc
+  from rxnsat
+  where sab = 'RXNORM'
+    and atn = 'NDC'
+    and suppress = 'N'
+    and atv is not null
+),
+scd_to_gpck as (
+  select distinct case when tty1 = 'SCD' then rxcui1 else rxcui2 end scd_rxcui,
+                  case when tty1 = 'GPCK' then rxcui1 else rxcui2 end gpck_rxcui
+  from edges
+  where rela in ('contains','contained_in')
+    and ((tty1 = 'SCD' and tty2 = 'GPCK') or (tty2 = 'SCD' and tty1 = 'GPCK'))
+),
+scd_to_bpck as (
+  select distinct case when tty1 = 'SCD' then rxcui1 else rxcui2 end scd_rxcui,
+                  case when tty1 = 'BPCK' then rxcui1 else rxcui2 end bpck_rxcui
+  from edges
+  where rela in ('contains','contained_in')
+    and ((tty1 = 'SCD' and tty2 = 'BPCK') or (tty2 = 'SCD' and tty1 = 'BPCK'))
+),
+scd_to_sbd as (
+  select distinct case when tty1 = 'SCD' then rxcui1 else rxcui2 end scd_rxcui,
+                  case when tty1 = 'SBD' then rxcui1 else rxcui2 end sbd_rxcui
+  from edges
+  where rela in ('has_tradename','tradename_of')
+    and ((tty1 = 'SCD' and tty2 = 'SBD') or (tty2 = 'SCD' and tty1 = 'SBD'))
+),
+all_ndc_paths as (
+  select 'SCD_NDC' ndc_path, s.scd_rxcui owner_rxcui, s.scd_rxcui, n.ndc
+  from scdc_to_scd s join ndc_values n on n.rxcui = s.scd_rxcui
+  union all
+  select 'GPCK_NDC', g.gpck_rxcui, g.scd_rxcui, n.ndc
+  from scd_to_gpck g join ndc_values n on n.rxcui = g.gpck_rxcui
+  union all
+  select 'BPCK_NDC', b.bpck_rxcui, b.scd_rxcui, n.ndc
+  from scd_to_bpck b join ndc_values n on n.rxcui = b.bpck_rxcui
+  union all
+  select 'SBD_NDC', s.sbd_rxcui, s.scd_rxcui, n.ndc
+  from scd_to_sbd s join ndc_values n on n.rxcui = s.sbd_rxcui
+)
+select distinct
+       i.unii,
+       i.rxcui ingredient_rxcui,
+       i.tty ingredient_tty,
+       i.name ingredient_name,
+       i2s.ingredient_path,
+       scdc.rxcui scdc_rxcui,
+       scdc.name scdc_name,
+       scd.rxcui scd_rxcui,
+       scd.name scd_name,
+       p.ndc_path,
+       owner.tty ndc_owner_tty,
+       owner.rxcui ndc_owner_rxcui,
+       owner.name ndc_owner_name,
+       p.ndc
+from ingredients i
+join ingredient_to_scdc i2s on i2s.ingredient_rxcui = i.rxcui
+join concepts scdc on scdc.rxcui = i2s.scdc_rxcui and scdc.tty = 'SCDC'
+join scdc_to_scd s2s on s2s.scdc_rxcui = i2s.scdc_rxcui
+join concepts scd on scd.rxcui = s2s.scd_rxcui and scd.tty = 'SCD'
+join all_ndc_paths p on p.scd_rxcui = s2s.scd_rxcui
+join concepts owner on owner.rxcui = p.owner_rxcui
+cross join params prm
+where (prm.scdc_rxcui is null or scdc.rxcui = prm.scdc_rxcui)
+  and (prm.scd_rxcui is null or scd.rxcui = prm.scd_rxcui)
+order by ingredient_name, scdc_name, scd_name, ndc_path, ndc_owner_name, ndc;`;
       }
 
       function buildDailyMedSearchUrl(ids, ndcs){

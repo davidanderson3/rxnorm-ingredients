@@ -488,6 +488,39 @@ def scan_rxnsat_boss_from(path: str) -> Dict[str, Set[Tuple[str, str]]]:
     return boss_from
 
 
+def scan_rxnsat_boss_substances(path: str) -> Dict[str, Dict[str, Dict[str, Set[str]]]]:
+    """Return product CUI -> basis kind -> source SCDC CUI -> substance CUIs.
+
+    RXN_AI/RXN_AM values look like "{330403} 12345", where the braced CUI is
+    the source SCDC component and the trailing CUI is the substance concept.
+    """
+    refs: Dict[str, Dict[str, Dict[str, Set[str]]]] = {}
+    value_re = re.compile(r"\{([^}]+)\}\s+(\S+)")
+    atn_to_basis = {"RXN_AI": "AI", "RXN_AM": "AM"}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line_no, line in enumerate(f, start=1):
+                parts = line.rstrip("\n").split("|")
+                if len(parts) < 13:
+                    continue
+                cui = parts[0]
+                atn = parts[8]
+                sab = parts[9]
+                atv = parts[10]
+                suppress = parts[11]
+                basis = atn_to_basis.get(atn)
+                if sab != TARGET_SAB or not basis or suppress != "N" or not cui:
+                    continue
+                match = value_re.fullmatch(atv.strip())
+                if not match:
+                    continue
+                scdc_cui, substance_cui = match.groups()
+                refs.setdefault(cui, {}).setdefault(basis, {}).setdefault(scdc_cui, set()).add(substance_cui)
+    except FileNotFoundError:
+        pass
+    return refs
+
+
 def scan_rxnconso_terms_for_cuis(path: str, cuis: Set[str]) -> Dict[str, Set[str]]:
     """Collect display/search terms for selected product CUIs."""
     terms: Dict[str, Set[str]] = {cui: set() for cui in cuis}
@@ -583,12 +616,18 @@ def derive_boss_form_scdc_links(
     return extra_pin_to_scdc, extra_in_to_scdc
 
 
-def _ingredient_concept(cui: str, ingredients: Dict[str, Dict[str, str]], unii_map: Dict[str, str]) -> Dict[str, str] | None:
+def _ingredient_concept(
+    cui: str,
+    ingredients: Dict[str, Dict[str, str]],
+    unii_map: Dict[str, str],
+    include_unii: bool = True,
+    allow_unresolved: bool = False,
+) -> Dict[str, str] | None:
     meta = ingredients.get(cui)
     if not meta:
-        return None
+        return {"RXCUI": cui} if allow_unresolved else None
     concept = {"Name": meta.get("name", ""), "RXCUI": cui, "TTY": meta.get("tty", "")}
-    unii = unii_map.get(cui)
+    unii = unii_map.get(cui) if include_unii else None
     if unii:
         concept["UNII"] = unii
     return concept
@@ -596,6 +635,7 @@ def _ingredient_concept(cui: str, ingredients: Dict[str, Dict[str, str]], unii_m
 
 def derive_product_active_info(
     boss_from: Dict[str, Set[Tuple[str, str]]],
+    boss_substances: Dict[str, Dict[str, Dict[str, Set[str]]]],
     product_terms: Dict[str, Set[str]],
     scdc_names: Dict[str, str],
     scdc_to_ins: Dict[str, Set[str]],
@@ -605,37 +645,63 @@ def derive_product_active_info(
     ingredients: Dict[str, Dict[str, str]],
     unii_map: Dict[str, str],
 ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
-    """Build product-level active ingredient/moiety metadata from RXN_BOSS_FROM."""
+    """Build product-level BoSS and active substance metadata."""
     product_info: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     pin_match_names = {pin: _match_key(meta.get("name", "")) for pin, meta in ingredients.items() if pin in pin_to_ins}
 
     def concepts(cuis: Set[str]) -> List[Dict[str, str]]:
         items = []
         for cui in sorted(cuis, key=lambda x: (ingredients.get(x, {}).get("name", ""), x)):
-            concept = _ingredient_concept(cui, ingredients, unii_map)
+            concept = _ingredient_concept(cui, ingredients, unii_map, include_unii=False, allow_unresolved=True)
             if concept:
                 items.append(concept)
         return items
 
+    def basis_label(basis: str) -> str:
+        return "Active Moiety" if basis == "AM" else "Active Ingredient" if basis == "AI" else basis
+
+    def union_refs(refs: Dict[str, Set[str]]) -> Set[str]:
+        cuis: Set[str] = set()
+        for values in refs.values():
+            cuis.update(values)
+        return cuis
+
+    def basis_concepts(cuis: Set[str], basis: str, scdc_cui: str) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        source_scdc = {
+            "Name": scdc_names.get(scdc_cui, ""),
+            "RXCUI": scdc_cui,
+            "TTY": "SCDC",
+        }
+        for cui in sorted(cuis, key=lambda x: (ingredients.get(x, {}).get("name", ""), x)):
+            concept = _ingredient_concept(cui, ingredients, unii_map, include_unii=False, allow_unresolved=True)
+            if not concept:
+                continue
+            concept["Basis"] = basis
+            concept["BasisLabel"] = basis_label(basis)
+            concept["SourceSCDC"] = source_scdc
+            items.append(concept)
+        return items
+
     for product_cui, refs in boss_from.items():
-        active_ingredient_cuis: Set[str] = set()
-        active_moiety_cuis: Set[str] = set()
+        substance_refs = boss_substances.get(product_cui, {})
+        ai_refs = substance_refs.get("AI", {})
+        am_refs = substance_refs.get("AM", {})
+        active_ingredient_cuis: Set[str] = union_refs(ai_refs)
+        active_moiety_cuis: Set[str] = union_refs(am_refs)
         basis_items: List[Dict[str, Any]] = []
         normalized_terms = [_match_key(term) for term in product_terms.get(product_cui, set())]
 
         for scdc_cui, basis in sorted(refs, key=lambda x: (scdc_names.get(x[0], ""), x[1], x[0])):
-            basis_items.append({
-                "Name": scdc_names.get(scdc_cui, ""),
-                "RXCUI": scdc_cui,
-                "TTY": "SCDC",
-                "Basis": basis,
-                "BasisLabel": "Active Moiety" if basis == "AM" else "Active Ingredient" if basis == "AI" else basis,
-            })
+            source_ai_cuis = set(ai_refs.get(scdc_cui, set()))
+            source_am_cuis = set(am_refs.get(scdc_cui, set()))
+            derived_ai_cuis: Set[str] = set()
+            derived_am_cuis: Set[str] = set()
 
             if basis == "AM":
                 ins = set(scdc_to_ins.get(scdc_cui, set()))
-                active_moiety_cuis.update(ins)
-                active_ingredient_cuis.update(scdc_to_pins.get(scdc_cui, set()))
+                derived_am_cuis.update(ins)
+                derived_ai_cuis.update(scdc_to_pins.get(scdc_cui, set()))
 
                 candidate_pins: Set[str] = set()
                 for in_cui in ins:
@@ -646,31 +712,41 @@ def derive_product_active_info(
                     if pin_match_names.get(pin) and any(pin_match_names[pin] in term for term in normalized_terms)
                 }
                 if matched_pins:
-                    active_ingredient_cuis.update(matched_pins)
+                    derived_ai_cuis.update(matched_pins)
                 elif not candidate_pins:
-                    active_ingredient_cuis.update(ins)
+                    derived_ai_cuis.update(ins)
 
             elif basis == "AI":
                 pins = set(scdc_to_pins.get(scdc_cui, set()))
                 ins = set(scdc_to_ins.get(scdc_cui, set()))
                 if pins:
-                    active_ingredient_cuis.update(pins)
+                    derived_ai_cuis.update(pins)
                     moieties_for_ref: Set[str] = set()
                     for pin_cui in pins:
                         moieties_for_ref.update(pin_to_ins.get(pin_cui, set()))
-                    active_moiety_cuis.update(moieties_for_ref or ins)
+                    derived_am_cuis.update(moieties_for_ref or ins)
                 else:
-                    active_ingredient_cuis.update(ins)
-                    active_moiety_cuis.update(ins)
+                    derived_ai_cuis.update(ins)
+                    derived_am_cuis.update(ins)
 
-        info: Dict[str, List[Dict[str, Any]]] = {"BasisOfStrength": basis_items}
+            active_ingredient_cuis.update(source_ai_cuis or derived_ai_cuis)
+            active_moiety_cuis.update(source_am_cuis or derived_am_cuis)
+            if basis == "AM":
+                basis_items.extend(basis_concepts(source_am_cuis or derived_am_cuis, basis, scdc_cui))
+            elif basis == "AI":
+                basis_items.extend(basis_concepts(source_ai_cuis or derived_ai_cuis, basis, scdc_cui))
+
+        info: Dict[str, List[Dict[str, Any]]] = {}
+        if basis_items:
+            info["BasisOfStrength"] = basis_items
         active_ingredients = concepts(active_ingredient_cuis)
         active_moieties = concepts(active_moiety_cuis)
         if active_ingredients:
             info["ActiveIngredients"] = active_ingredients
         if active_moieties:
             info["ActiveMoieties"] = active_moieties
-        product_info[product_cui] = info
+        if info:
+            product_info[product_cui] = info
 
     return product_info
 
@@ -918,6 +994,7 @@ def main() -> int:
         # RXNORM NDCs from RXNSAT
         cui_to_ndcs = scan_rxnsat_ndc_rxnorm(sat_path)
         boss_from = scan_rxnsat_boss_from(sat_path)
+        boss_substances = scan_rxnsat_boss_substances(sat_path)
         product_terms = scan_rxnconso_terms_for_cuis(input_path, set(boss_from.keys()))
         boss_pin_to_scdc, boss_in_to_scdc = derive_boss_form_scdc_links(
             boss_from,
@@ -930,6 +1007,7 @@ def main() -> int:
         )
         product_active_info = derive_product_active_info(
             boss_from,
+            boss_substances,
             product_terms,
             scdc_names,
             scdc_to_ins,
@@ -989,16 +1067,15 @@ def main() -> int:
                     sbds = []
                     for b in sorted(scd_to_sbd.get(s, set()), key=lambda x: sbd_names.get(x, "")):
                         sbd_obj = {"Name": sbd_names.get(b, ""), "RXCUI": b, "TTY": "SBD"}
-                        attach_active_info(sbd_obj)
                         ndcs_s = sorted(cui_to_ndcs.get(b, set()))
                         if ndcs_s:
                             sbd_obj["NDCs"] = ndcs_s
                         bn_ids = sorted(sbd_to_bn.get(b, set()), key=lambda x: bn_names.get(x, ""))
                         if bn_ids:
                             sbd_obj["BNs"] = [{"Name": bn_names.get(bn, ""), "RXCUI": bn, "TTY": "BN"} for bn in bn_ids]
+                        attach_active_info(sbd_obj)
                         sbds.append(sbd_obj)
                     scd_obj = {"Name": scd_names.get(s, ""), "RXCUI": s, "TTY": "SCD"}
-                    attach_active_info(scd_obj)
                     # attach RXNORM NDCs if present for SCD
                     ndcs = sorted(cui_to_ndcs.get(s, set()))
                     if ndcs:
@@ -1006,20 +1083,21 @@ def main() -> int:
                     if gpcks:
                         # add NDCs for GPCKs if present
                         for obj in gpcks:
-                            attach_active_info(obj)
                             ndcs_g = sorted(cui_to_ndcs.get(obj["RXCUI"], set()))
                             if ndcs_g:
                                 obj["NDCs"] = ndcs_g
+                            attach_active_info(obj)
                         scd_obj["GPCKs"] = gpcks
                     if bpcks:
                         for obj in bpcks:
-                            attach_active_info(obj)
                             ndcs_b = sorted(cui_to_ndcs.get(obj["RXCUI"], set()))
                             if ndcs_b:
                                 obj["NDCs"] = ndcs_b
+                            attach_active_info(obj)
                         scd_obj["BPCKs"] = bpcks
                     if sbds:
                         scd_obj["SBDs"] = sbds
+                    attach_active_info(scd_obj)
                     scds.append(scd_obj)
                 scdcs.append({"Name": scdc_names.get(sc, ""), "RXCUI": sc, "TTY": "SCDC", "SCDs": scds})
             unii = unii_map.get(cui)
