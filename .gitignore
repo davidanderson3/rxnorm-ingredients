@@ -4,6 +4,7 @@ RXNSAT.RRF
 RXNREL.RRF
 RxNorm_Full_Prescribe*
 web/manifest.json
+web/metadata.json
 web/data
 
 .zsh_history

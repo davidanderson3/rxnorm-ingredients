@@ -30,6 +30,7 @@ import argparse
 import http.server
 import json
 import os
+import re
 import socketserver
 import sys
 import urllib.error
@@ -523,11 +524,71 @@ def write_json(records: Iterable[Dict[str, Any]], output_path: str, ndjson: bool
             json.dump(data, out, ensure_ascii=False, indent=2)
 
 
-def write_web_split(data: List[Dict[str, Any]], out_dir: str) -> None:
+def find_rxnorm_readme(rrf_dir: str) -> str | None:
+    """Find the RxNorm prescribe readme near an RRF directory."""
+    search_dirs: List[str] = []
+    current = os.path.abspath(rrf_dir)
+    for _ in range(4):
+        search_dirs.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+
+    seen: Set[str] = set()
+    for directory in search_dirs:
+        if directory in seen or not os.path.isdir(directory):
+            continue
+        seen.add(directory)
+        for name in os.listdir(directory):
+            if re.fullmatch(r"Readme_Full_Prescribe_\d{8}\.txt", name, flags=re.IGNORECASE):
+                return os.path.join(directory, name)
+    return None
+
+
+def rxnorm_metadata_from_readme(rrf_dir: str) -> Dict[str, str]:
+    """Extract the RxNorm release version shown in the web UI."""
+    readme_path = find_rxnorm_readme(rrf_dir)
+    metadata: Dict[str, str] = {}
+    if not readme_path:
+        return metadata
+
+    metadata["source_readme"] = os.path.basename(readme_path)
+    try:
+        with open(readme_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = [line.strip() for line in f.readlines()]
+    except OSError:
+        return metadata
+
+    release_date = next((line for line in lines if line), "")
+    if release_date:
+        metadata["rxnorm_release_date"] = release_date
+
+    release_label = ""
+    for line in lines:
+        if line.startswith("README:"):
+            release_label = line.replace("README:", "", 1).strip()
+            break
+    if release_label:
+        metadata["rxnorm_release_label"] = release_label
+        match = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", release_label)
+        if match:
+            metadata["rxnorm_version"] = match.group(1)
+
+    if "rxnorm_version" not in metadata:
+        match = re.search(r"Readme_Full_Prescribe_(\d{2})(\d{2})(\d{4})\.txt", os.path.basename(readme_path), re.IGNORECASE)
+        if match:
+            metadata["rxnorm_version"] = f"{match.group(1)}/{match.group(2)}/{match.group(3)}"
+
+    return metadata
+
+
+def write_web_split(data: List[Dict[str, Any]], out_dir: str, metadata: Dict[str, str] | None = None) -> None:
     """Write lightweight, serverless web assets split by first letter of Name.
 
     Produces:
       - <out_dir>/manifest.json: [{ key, label, count, file }]
+      - <out_dir>/metadata.json: release metadata for the UI
       - <out_dir>/data/<KEY>.json: array of enriched records for that key
     Keys: 'A'..'Z' plus '0-9' bucket for non-letters.
     """
@@ -562,6 +623,8 @@ def write_web_split(data: List[Dict[str, Any]], out_dir: str) -> None:
 
     with open(os.path.join(out_dir, 'manifest.json'), 'w', encoding='utf-8') as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(out_dir, 'metadata.json'), 'w', encoding='utf-8') as f:
+        json.dump(metadata or {}, f, ensure_ascii=False, indent=2)
 
 
 def main() -> int:
@@ -578,6 +641,7 @@ def main() -> int:
             download_root = os.getcwd()
             rrf_dir = download_and_extract(RXN_ZIP_URL, download_root)
             print(f"Using downloaded RRFs from: {rrf_dir}", file=sys.stderr)
+        metadata = rxnorm_metadata_from_readme(rrf_dir)
         input_path = os.path.join(rrf_dir, "RXNCONSO.RRF")
         rel_path = os.path.join(rrf_dir, "RXNREL.RRF")
         sat_path = os.path.join(rrf_dir, "RXNSAT.RRF")
@@ -703,7 +767,7 @@ def main() -> int:
 
         output.sort(key=lambda r: (r.get("Name") or "").lower())
         write_json(output, output_path, ndjson=False)
-        write_web_split(output, web_split_dir)
+        write_web_split(output, web_split_dir, metadata)
         print(f"Wrote {output_path} and web assets in {web_split_dir}/", file=sys.stderr)
 
         if not args.no_serve:

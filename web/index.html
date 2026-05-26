@@ -10,6 +10,7 @@
       header{padding:12px 16px;border-bottom:1px solid #e5e8f0;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
       h1{font-size:16px;margin:0}
       h3{font-size:16px;margin:0}
+      .version{font-size:12px;white-space:nowrap}
       .letters{display:flex;gap:6px;flex-wrap:wrap}
       .letters button{padding:6px 9px;border:1px solid #d7dbe6;background:#fff;border-radius:6px;cursor:pointer}
       .letters button.active{background:var(--chip);border-color:var(--hl);color:var(--hl)}
@@ -25,6 +26,9 @@
       #list .name{font-weight:600}
       #list .meta{color:var(--muted);font-size:12px}
       section{padding:12px 16px;overflow:auto;border-right:1px solid #e5e8f0}
+      .concept-name{font-size:15px;font-weight:700;line-height:1.35}
+      .brand-name{font-size:16px;font-weight:700;line-height:1.35}
+      .concept-name strong,.brand-name strong{font-weight:800}
       .pill{display:inline-block;background:var(--chip);color:var(--hl);border:1px solid var(--hl);padding:2px 6px;border-radius:999px;font-size:12px;margin-left:6px}
       details{margin:8px 0}
       summary{cursor:pointer}
@@ -37,16 +41,24 @@
       .list{list-style:none;margin:0;padding:0}
       .list li{padding:8px 10px;border-bottom:1px solid #f0f2f7;cursor:pointer}
       .list li.active{background:#f6f8fe}
+      .nested-list li{cursor:default}
+      .nested-heading{border-left:2px solid #e5e8f0;margin:8px 0 0 8px;padding-left:18px}
+      .card .nested-list{border-left:2px solid #e5e8f0;margin-top:6px;margin-left:8px;padding-left:10px}
+      .card .nested-list li{padding-left:8px}
       .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
       .section-head{margin:8px 0 6px;padding:8px 10px;border:1px solid #e5e8f0;border-radius:8px;background:#f7f9ff}
       .section-head h3{font-weight:700}
       .section-sub{color:var(--muted);margin-top:2px}
       .chip-link{font-size:12px;padding:2px 6px;border-radius:999px;border:1px solid #b9c6f8;background:#eef3ff;color:#2a56cc;text-decoration:none}
+      .rxnav-link{color:var(--hl);text-decoration:none}
+      .rxnav-link:hover{text-decoration:underline}
+      .subtle-rule{border:0;border-top:1px solid #e5e8f0;margin:10px 0 8px}
     </style>
   </head>
   <body>
     <header>
       <h1>RxNorm Ingredients</h1>
+      <span id="version" class="version muted"></span>
       <div class="letters" id="letters"></div>
       
     </header>
@@ -78,16 +90,32 @@
       const sbdCol = document.getElementById('sbdCol');
       const countEl = document.getElementById('count');
       const qEl = document.getElementById('q');
+      const versionEl = document.getElementById('version');
 
-      fetch('manifest.json').then(r=>r.json()).then(mf=>{
+      fetch('manifest.json').then(r=>r.json()).then(async mf=>{
         state.manifest = mf;
         renderLetters(mf);
-        // auto select A if present otherwise first
+        const urlState = readUrlState();
         const first = mf.find(x=>x.key==='A') || mf[0];
-        if (first) selectLetter(first.key);
+        const queryKey = bucketKeyForText(urlState.q);
+        const initialKey = manifestHasKey(urlState.bucketKey) ? urlState.bucketKey
+          : (manifestHasKey(queryKey) ? queryKey : (first && first.key));
+        if(urlState.q){ qEl.value = urlState.q; }
+        if (initialKey) await selectLetter(initialKey, { preserveQuery: true, restore: urlState, updateUrl: false });
+        updateUrlState();
       }).catch(err=>{
         scdcCol.textContent = 'Failed to load manifest.json. Serve this folder via a local HTTP server (e.g., python3 -m http.server).';
       });
+      fetch('metadata.json').then(r=>r.ok ? r.json() : Promise.reject()).then(meta=>{
+        const version = meta.rxnorm_version || '';
+        const label = meta.rxnorm_release_label || '';
+        if(version){
+          versionEl.textContent = `Version ${version}`;
+          if(label){ versionEl.title = label; }
+        } else if(label){
+          versionEl.textContent = label;
+        }
+      }).catch(()=>{});
 
       function renderLetters(mf){
         lettersEl.innerHTML = '';
@@ -107,6 +135,62 @@
         });
       }
 
+      function readUrlState(){
+        const params = new URLSearchParams(window.location.search);
+        return {
+          bucketKey: params.get('bucket') || '',
+          q: params.get('q') || '',
+          ingredient: params.get('ingredient') || '',
+          scdc: params.get('scdc') || '',
+          scd: params.get('scd') || '',
+        };
+      }
+
+      function bucketKeyForText(value){
+        const ch = (value || '').trim().charAt(0).toUpperCase();
+        if(ch >= 'A' && ch <= 'Z') return ch;
+        if(ch >= '0' && ch <= '9') return '0-9';
+        return null;
+      }
+
+      function manifestHasKey(key){
+        return !!(key && state.manifest && state.manifest.find(e=>e.key===key));
+      }
+
+      function updateUrlState(){
+        if(!state.manifest || !state.bucketKey) return;
+        const params = new URLSearchParams();
+        params.set('bucket', state.bucketKey);
+        const q = qEl.value.trim();
+        if(q){ params.set('q', q); }
+        if(state.selected){ params.set('ingredient', state.selected.RXCUI); }
+        if(state.selectedScdc){ params.set('scdc', state.selectedScdc.RXCUI); }
+        if(state.selectedScd){ params.set('scd', state.selectedScd.RXCUI); }
+        const nextUrl = `${window.location.pathname}?${params.toString()}${window.location.hash}`;
+        window.history.replaceState(null, '', nextUrl);
+      }
+
+      function filterRecords(){
+        const q = qEl.value.trim().toLowerCase();
+        state.filtered = state.records.filter(r => {
+          if(q && !(r.Name||'').toLowerCase().includes(q)) return false;
+          return true;
+        });
+      }
+
+      function restoreSelections(urlState){
+        if(!urlState || !urlState.ingredient) return;
+        const selected = state.records.find(r=>r.RXCUI===urlState.ingredient);
+        if(!selected) return;
+        state.selected = selected;
+        const scdcs = selected.SCDCs || [];
+        state.selectedScdc = urlState.scdc ? (scdcs.find(x=>x.RXCUI===urlState.scdc) || null) : null;
+        if(!state.selectedScdc && scdcs.length === 1){ state.selectedScdc = scdcs[0]; }
+        const scds = (state.selectedScdc && state.selectedScdc.SCDs) || [];
+        state.selectedScd = urlState.scd ? (scds.find(x=>x.RXCUI===urlState.scd) || null) : null;
+        if(!state.selectedScd && scds.length === 1){ state.selectedScd = scds[0]; }
+      }
+
       async function selectLetter(key, opts={}){
         state.bucketKey = key; setActiveLetter(key);
         const ent = state.manifest.find(x=>x.key===key);
@@ -115,14 +199,16 @@
         const data = await fetch(ent.file).then(r=>r.json());
         state.records = data; state.filtered = data; state.selected = null; state.selectedScdc=null; state.selectedScd=null;
         if(!opts.preserveQuery){ qEl.value=''; }
+        filterRecords();
+        restoreSelections(opts.restore);
         renderList(); renderScdcCol(); renderScdCol(); renderSbdCol();
+        if(opts.updateUrl !== false){ updateUrlState(); }
       }
 
       qEl.addEventListener('input', ()=>{ applyFilters(); });
 
       async function applyFilters(){
         const qRaw = qEl.value;
-        const q = qRaw.trim().toLowerCase();
         // If query starts with a letter or digit, auto-switch letter bucket
         if(qRaw && qRaw.length){
           const ch = qRaw[0].toUpperCase();
@@ -131,13 +217,12 @@
           else if(ch >= '0' && ch <= '9'){ key = '0-9'; }
           if(key && key !== state.bucketKey && state.manifest && state.manifest.find(e=>e.key===key)){
             await selectLetter(key, { preserveQuery: true });
+            return;
           }
         }
-        state.filtered = state.records.filter(r => {
-          if(q && !(r.Name||'').toLowerCase().includes(q)) return false;
-          return true;
-        });
+        filterRecords();
         renderList();
+        updateUrlState();
       }
 
 
@@ -151,14 +236,13 @@
           for(; i<end; i++){
             const r = state.filtered[i];
             const li = document.createElement('li');
-            let links = `<a href=\"https://mor.nlm.nih.gov/RxNav/search?searchBy=NameOrCode&searchTerm=${encodeURIComponent(r.RXCUI)}\" target=\"_blank\" rel=\"noopener\">RxNav</a>`;
+            let links = '';
             if(r.SPL_SET_IDs && r.SPL_SET_IDs.length){
-              const dm = renderDailyMedLink(r.SPL_SET_IDs);
-              links = dm + ' ' + links;
+              links = `<div>${renderDailyMedLink(r.SPL_SET_IDs)}</div>`;
             }
             li.innerHTML = `<div class="name">${escapeHtml(r.Name)} <span class="pill">${r.TTY}</span></div>
-                            <div class="meta mono"><strong>RXCUI</strong> ${r.RXCUI}${r.UNII?` · <strong>UNII</strong> ${r.UNII}`:''}</div>
-                            <div>${links}</div>`;
+                            <div class="meta mono"><strong>RXCUI</strong> ${renderRxcui(r.RXCUI)}${r.UNII?` · <strong>UNII</strong> ${r.UNII}`:''}</div>
+                            ${links}`;
             li.dataset.rxcui = r.RXCUI;
             if(state.selected && state.selected.RXCUI === r.RXCUI){ li.classList.add('active'); }
             li.onclick = ()=>{
@@ -174,6 +258,7 @@
                 el.classList.toggle('active', el.dataset.rxcui === r.RXCUI);
               });
               renderScdcCol(); renderScdCol(); renderSbdCol();
+              updateUrlState();
               try { window.scrollTo(0, 0); } catch {}
             };
             listEl.appendChild(li);
@@ -191,8 +276,8 @@
         let html = `<div class="section-head"><h3>SCDCs (Semantic Clinical Drug Components)</h3><div class="section-sub">(ingredient + strength)</div></div><ul class="list">`;
         r.SCDCs.forEach(scdc=>{
           const active = state.selectedScdc && state.selectedScdc.RXCUI===scdc.RXCUI;
-          html += `<li class="${active?'active':''}" data-rxcui="${scdc.RXCUI}"><div><strong>${escapeHtml(scdc.Name)}</strong> <span class="pill">${scdc.TTY}</span></div>
-                   <div class="mono muted"><strong>RXCUI</strong> ${scdc.RXCUI}</div></li>`;
+          html += `<li class="${active?'active':''}" data-rxcui="${scdc.RXCUI}"><div class="concept-name"><strong>${escapeHtml(scdc.Name)}</strong> <span class="pill">${scdc.TTY}</span></div>
+                   <div class="mono muted"><strong>RXCUI</strong> ${renderRxcui(scdc.RXCUI)}</div></li>`;
         });
         html += `</ul>`;
         scdcCol.innerHTML = html;
@@ -204,6 +289,7 @@
             const scds = (state.selectedScdc && state.selectedScdc.SCDs) || [];
             state.selectedScd = (scds.length === 1) ? scds[0] : null;
             renderScdcCol(); renderScdCol(); renderSbdCol();
+            updateUrlState();
           };
         });
       }
@@ -215,8 +301,8 @@
         let html = `<div class="section-head"><h3>SCDs (${scds.length})</h3><div class="section-sub">(ingredient + strength + dose form)</div></div><ul class="list">`;
         scds.forEach(scd=>{
           const active = state.selectedScd && state.selectedScd.RXCUI===scd.RXCUI;
-          html += `<li class="${active?'active':''}" data-rxcui="${scd.RXCUI}"><div><strong>${escapeHtml(scd.Name)}</strong> <span class="pill">${scd.TTY}</span></div>
-                   <div class="mono muted"><strong>RXCUI</strong> ${scd.RXCUI}</div>`;
+          html += `<li class="${active?'active':''}" data-rxcui="${scd.RXCUI}"><div class="concept-name"><strong>${escapeHtml(scd.Name)}</strong> <span class="pill">${scd.TTY}</span></div>
+                   <div class="mono muted"><strong>RXCUI</strong> ${renderRxcui(scd.RXCUI)}</div>`;
           // Separate dropdowns for identifiers
           if(scd.NDCs && scd.NDCs.length){
             const urlN = buildDailyMedSearchUrl(null, scd.NDCs);
@@ -247,6 +333,7 @@
             const cui = li.getAttribute('data-rxcui');
             state.selectedScd = (scdc.SCDs||[]).find(x=>x.RXCUI===cui) || null;
             renderScdCol(); renderSbdCol();
+            updateUrlState();
           };
         });
         // Keep details toggles from re-selecting the SCD and re-rendering
@@ -275,41 +362,55 @@
           return;
         }
         const parts = [];
-        const sbdCount = (scd.SBDs||[]).length;
-        parts.push(`<div class="section-head"><h3>SBDs (${sbdCount})</h3><div class="section-sub">(ingredient + strength + dose form + [brand name])</div></div>`);
+        const sbds = scd.SBDs || [];
+        const sbdCount = sbds.length;
         if(!sbdCount){
+          parts.push(`<div class="section-head"><h3>SBDs (0)</h3><div class="section-sub">(ingredient + strength + dose form + [brand name])</div></div>`);
           parts.push('<div class="muted">No SBDs.</div>');
           sbdCol.innerHTML = parts.join('');
           return;
         }
-        (scd.SBDs||[]).forEach(b=>{
-          let html = `<div class="card"><div class="line"><strong>${escapeHtml(b.Name)}</strong><span class="pill">${b.TTY}</span></div>`;
-          html += `<div class="mono muted"><strong>RXCUI</strong> ${b.RXCUI}</div>`;
-          if(b.NDCs && b.NDCs.length){
-            const urlN = buildDailyMedSearchUrl(null, b.NDCs);
-            html += `<details><summary>NDCs</summary><div class=\"mono\">${b.NDCs.join(', ')}</div><div><a href=\"${urlN}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+
+        const bnGroups = new Map();
+        const unbrandedSbds = [];
+        sbds.forEach(sbd=>{
+          const bns = sbd.BNs || [];
+          if(!bns.length){
+            unbrandedSbds.push(sbd);
+            return;
           }
-          if(b.SPL_SET_IDs && b.SPL_SET_IDs.length){
-            const urlS = buildDailyMedSearchUrl(b.SPL_SET_IDs, null);
-            html += `<details><summary>SPL Set IDs</summary><div class=\"mono\">${b.SPL_SET_IDs.join(', ')}</div><div><a href=\"${urlS}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+          bns.forEach(bn=>{
+            const key = bn.RXCUI || bn.Name || 'unknown';
+            if(!bnGroups.has(key)){ bnGroups.set(key, { bn, sbds: [] }); }
+            bnGroups.get(key).sbds.push(sbd);
+          });
+        });
+
+        const groups = Array.from(bnGroups.values()).sort((a,b)=> (a.bn.Name||'').localeCompare(b.bn.Name||''));
+        parts.push(`<div class="section-head"><h3>BNs (${groups.length})</h3><div class="section-sub">Brand names grouped with their SBDs (${sbdCount})</div></div>`);
+        groups.forEach(group=>{
+          const bn = group.bn;
+          let html = `<div class="card"><div class="line brand-name"><strong>${escapeHtml(bn.Name)}</strong><span class="pill">${bn.TTY}</span></div>`;
+          html += `<div class="mono muted"><strong>RXCUI</strong> ${renderRxcui(bn.RXCUI)}</div>`;
+          if(bn.SPL_SET_IDs && bn.SPL_SET_IDs.length){
+            const urlS = buildDailyMedSearchUrl(bn.SPL_SET_IDs, null);
+            html += `<details><summary>SPL Set IDs</summary><div class=\"mono\">${bn.SPL_SET_IDs.join(', ')}</div><div><a href=\"${urlS}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
           }
-          if(b.BNs && b.BNs.length){
-            html += `<div class="muted"><strong>BNs</strong></div>`;
-            html += `<ul class="list">`;
-            b.BNs.forEach(n=>{
-              html += `<li><div><strong>${escapeHtml(n.Name)}</strong> <span class="pill">${n.TTY}</span></div>
-                       <div class="mono muted"><strong>RXCUI</strong> ${n.RXCUI}</div>`;
-              if(n.SPL_SET_IDs && n.SPL_SET_IDs.length){
-                const urlS = buildDailyMedSearchUrl(n.SPL_SET_IDs, null);
-                html += `<details><summary>SPL Set IDs</summary><div class=\"mono\">${n.SPL_SET_IDs.join(', ')}</div><div><a href=\"${urlS}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
-              }
-              html += `</li>`;
-            });
-            html += `</ul>`;
-          }
-          html += `</div>`;
+          html += `<hr class="subtle-rule"><div class="muted nested-heading"><strong>SBDs (${group.sbds.length})</strong></div>`;
+          html += `<ul class="list nested-list">`;
+          group.sbds
+            .slice()
+            .sort((a,b)=> (a.Name||'').localeCompare(b.Name||''))
+            .forEach(sbd=>{ html += renderSbdListItem(sbd); });
+          html += `</ul></div>`;
           parts.push(html);
         });
+
+        if(unbrandedSbds.length){
+          parts.push(`<div class="section-head"><h3>SBDs without BN (${unbrandedSbds.length})</h3></div>`);
+          parts.push(`<ul class="list nested-list">${unbrandedSbds.map(renderSbdListItem).join('')}</ul>`);
+        }
+
         // BPCKs section under SBDs
         if(scd.BPCKs && scd.BPCKs.length){
           parts.push(`<div class="section-head"><h3>BPCKs (${scd.BPCKs.length})</h3><div class="section-sub">{X (ingredient + strength + dose form) / Y (ingredient + strength + dose form)} Pack [brand name]. X and Y are quantities (e.g., number of pills for each product).</div></div>`);
@@ -318,11 +419,26 @@
         sbdCol.innerHTML = parts.join('\n');
       }
 
+      function renderSbdListItem(sbd){
+        let html = `<li><div><strong>${escapeHtml(sbd.Name)}</strong> <span class="pill">${sbd.TTY}</span></div>`;
+        html += `<div class="mono muted"><strong>RXCUI</strong> ${renderRxcui(sbd.RXCUI)}</div>`;
+        if(sbd.NDCs && sbd.NDCs.length){
+          const urlN = buildDailyMedSearchUrl(null, sbd.NDCs);
+          html += `<details><summary>NDCs</summary><div class=\"mono\">${sbd.NDCs.join(', ')}</div><div><a href=\"${urlN}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+        }
+        if(sbd.SPL_SET_IDs && sbd.SPL_SET_IDs.length){
+          const urlS = buildDailyMedSearchUrl(sbd.SPL_SET_IDs, null);
+          html += `<details><summary>SPL Set IDs</summary><div class=\"mono\">${sbd.SPL_SET_IDs.join(', ')}</div><div><a href=\"${urlS}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
+        }
+        html += `</li>`;
+        return html;
+      }
+
       function renderPackList(label, arr){
         let html = `<div class="muted"><strong>${label}s</strong></div><ul class="list">`;
         arr.forEach(p=>{
           html += `<li><div>${escapeHtml(p.Name)} <span class="pill">${p.TTY}</span></div>
-                   <div class="mono muted"><strong>RXCUI</strong> ${p.RXCUI}</div>`;
+                   <div class="mono muted"><strong>RXCUI</strong> ${renderRxcui(p.RXCUI)}</div>`;
           if(p.NDCs && p.NDCs.length){
             const urlN = buildDailyMedSearchUrl(null, p.NDCs);
             html += `<details><summary>NDCs</summary><div class=\"mono\">${p.NDCs.join(', ')}</div><div><a href=\"${urlN}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
@@ -340,7 +456,7 @@
         let html = `<ul class="list">`;
         arr.forEach(p=>{
           html += `<li><div>${escapeHtml(p.Name)} <span class="pill">${p.TTY}</span></div>
-                   <div class="mono muted"><strong>RXCUI</strong> ${p.RXCUI}</div>`;
+                   <div class="mono muted"><strong>RXCUI</strong> ${renderRxcui(p.RXCUI)}</div>`;
           if(p.NDCs && p.NDCs.length){
             const urlN = buildDailyMedSearchUrl(null, p.NDCs);
             html += `<details><summary>NDCs</summary><div class=\"mono\">${p.NDCs.join(', ')}</div><div><a href=\"${urlN}\" target=\"_blank\" rel=\"noopener\">DailyMed</a></div></details>`;
@@ -367,6 +483,14 @@
       function renderDailyMedLink(ids, ndcs){
         const url = buildDailyMedSearchUrl(ids, ndcs);
         return `<a href="${url}" target="_blank" rel="noopener">DailyMed</a>`;
+      }
+      function buildRxNavUrl(rxcui){
+        return `https://mor.nlm.nih.gov/RxNav/search?searchBy=NameOrCode&searchTerm=${encodeURIComponent(rxcui||'')}`;
+      }
+      function renderRxcui(rxcui){
+        const value = escapeHtml(String(rxcui||''));
+        if(!value) return '';
+        return `<a class="rxnav-link" href="${buildRxNavUrl(rxcui)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${value}</a>`;
       }
 
       function escapeHtml(s){
