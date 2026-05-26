@@ -458,6 +458,223 @@ def scan_rxnsat_ndc_rxnorm(path: str) -> Dict[str, Set[str]]:
     return ndc_map
 
 
+def scan_rxnsat_boss_from(path: str) -> Dict[str, Set[Tuple[str, str]]]:
+    """Return product CUI -> {(SCDC CUI, basis)} from RXN_BOSS_FROM.
+
+    RXN_BOSS_FROM values look like "{330403} AM" or "{477368} AI".
+    AM means basis-of-strength is active moiety; AI means active ingredient.
+    """
+    boss_from: Dict[str, Set[Tuple[str, str]]] = {}
+    value_re = re.compile(r"\{([^}]+)\}\s+([A-Z]+)")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line_no, line in enumerate(f, start=1):
+                parts = line.rstrip("\n").split("|")
+                if len(parts) < 13:
+                    continue
+                cui = parts[0]
+                atn = parts[8]
+                sab = parts[9]
+                atv = parts[10]
+                suppress = parts[11]
+                if sab != TARGET_SAB or atn != "RXN_BOSS_FROM" or suppress != "N" or not cui:
+                    continue
+                match = value_re.fullmatch(atv.strip())
+                if not match:
+                    continue
+                boss_from.setdefault(cui, set()).add((match.group(1), match.group(2)))
+    except FileNotFoundError:
+        pass
+    return boss_from
+
+
+def scan_rxnconso_terms_for_cuis(path: str, cuis: Set[str]) -> Dict[str, Set[str]]:
+    """Collect display/search terms for selected product CUIs."""
+    terms: Dict[str, Set[str]] = {cui: set() for cui in cuis}
+    if not cuis:
+        return terms
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line_no, line in enumerate(f, start=1):
+            parts = line.rstrip("\n").split("|")
+            if len(parts) < 18:
+                continue
+            cui = parts[0]
+            if cui not in cuis:
+                continue
+            sab = parts[11]
+            name = parts[14]
+            suppress = parts[16]
+            if suppress != "N" or sab not in {TARGET_SAB, "MTHSPL"} or not name:
+                continue
+            terms.setdefault(cui, set()).add(name)
+    return terms
+
+
+def scan_rxnrel_in_pin_forms(
+    path: str,
+    in_set: Set[str],
+    pin_set: Set[str],
+) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    """Map IN <-> PIN form relationships via form_of/has_form."""
+    in_to_pins: Dict[str, Set[str]] = {cui: set() for cui in in_set}
+    pin_to_ins: Dict[str, Set[str]] = {cui: set() for cui in pin_set}
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line_no, line in enumerate(f, start=1):
+            parts = line.rstrip("\n").split("|")
+            if len(parts) < 16:
+                continue
+            c1 = parts[0]
+            st1 = parts[2]
+            c2 = parts[4]
+            st2 = parts[6]
+            rela = parts[7]
+            sab = parts[10]
+            if sab != TARGET_SAB or st1 != "CUI" or st2 != "CUI":
+                continue
+            if rela not in {"form_of", "has_form"}:
+                continue
+            if c1 in in_set and c2 in pin_set:
+                in_to_pins.setdefault(c1, set()).add(c2)
+                pin_to_ins.setdefault(c2, set()).add(c1)
+            elif c2 in in_set and c1 in pin_set:
+                in_to_pins.setdefault(c2, set()).add(c1)
+                pin_to_ins.setdefault(c1, set()).add(c2)
+    return in_to_pins, pin_to_ins
+
+
+def _match_key(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", value.lower())).strip()
+
+
+def derive_boss_form_scdc_links(
+    boss_from: Dict[str, Set[Tuple[str, str]]],
+    product_terms: Dict[str, Set[str]],
+    scdc_to_ins: Dict[str, Set[str]],
+    scdc_to_pins: Dict[str, Set[str]],
+    in_to_pins: Dict[str, Set[str]],
+    pin_to_ins: Dict[str, Set[str]],
+    ingredients: Dict[str, Dict[str, str]],
+) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    """Add missing IN/PIN links when BOSS says AI and AM differ.
+
+    AM-based products often have SCDC names based on the active moiety, while
+    the product terms still name the precise salt/form. Link those products'
+    SCDCs to the matching PIN so the product appears under both ingredient
+    concepts.
+    """
+    extra_pin_to_scdc: Dict[str, Set[str]] = {}
+    extra_in_to_scdc: Dict[str, Set[str]] = {}
+    pin_match_names = {pin: _match_key(meta.get("name", "")) for pin, meta in ingredients.items() if pin in pin_to_ins}
+
+    for product_cui, refs in boss_from.items():
+        normalized_terms = [_match_key(term) for term in product_terms.get(product_cui, set())]
+        for scdc_cui, basis in refs:
+            if basis == "AM":
+                for in_cui in scdc_to_ins.get(scdc_cui, set()):
+                    for pin_cui in in_to_pins.get(in_cui, set()):
+                        pin_name = pin_match_names.get(pin_cui, "")
+                        if pin_name and any(pin_name in term for term in normalized_terms):
+                            extra_pin_to_scdc.setdefault(pin_cui, set()).add(scdc_cui)
+            elif basis == "AI":
+                for pin_cui in scdc_to_pins.get(scdc_cui, set()):
+                    for in_cui in pin_to_ins.get(pin_cui, set()):
+                        extra_in_to_scdc.setdefault(in_cui, set()).add(scdc_cui)
+
+    return extra_pin_to_scdc, extra_in_to_scdc
+
+
+def _ingredient_concept(cui: str, ingredients: Dict[str, Dict[str, str]], unii_map: Dict[str, str]) -> Dict[str, str] | None:
+    meta = ingredients.get(cui)
+    if not meta:
+        return None
+    concept = {"Name": meta.get("name", ""), "RXCUI": cui, "TTY": meta.get("tty", "")}
+    unii = unii_map.get(cui)
+    if unii:
+        concept["UNII"] = unii
+    return concept
+
+
+def derive_product_active_info(
+    boss_from: Dict[str, Set[Tuple[str, str]]],
+    product_terms: Dict[str, Set[str]],
+    scdc_names: Dict[str, str],
+    scdc_to_ins: Dict[str, Set[str]],
+    scdc_to_pins: Dict[str, Set[str]],
+    in_to_pins: Dict[str, Set[str]],
+    pin_to_ins: Dict[str, Set[str]],
+    ingredients: Dict[str, Dict[str, str]],
+    unii_map: Dict[str, str],
+) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    """Build product-level active ingredient/moiety metadata from RXN_BOSS_FROM."""
+    product_info: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    pin_match_names = {pin: _match_key(meta.get("name", "")) for pin, meta in ingredients.items() if pin in pin_to_ins}
+
+    def concepts(cuis: Set[str]) -> List[Dict[str, str]]:
+        items = []
+        for cui in sorted(cuis, key=lambda x: (ingredients.get(x, {}).get("name", ""), x)):
+            concept = _ingredient_concept(cui, ingredients, unii_map)
+            if concept:
+                items.append(concept)
+        return items
+
+    for product_cui, refs in boss_from.items():
+        active_ingredient_cuis: Set[str] = set()
+        active_moiety_cuis: Set[str] = set()
+        basis_items: List[Dict[str, Any]] = []
+        normalized_terms = [_match_key(term) for term in product_terms.get(product_cui, set())]
+
+        for scdc_cui, basis in sorted(refs, key=lambda x: (scdc_names.get(x[0], ""), x[1], x[0])):
+            basis_items.append({
+                "Name": scdc_names.get(scdc_cui, ""),
+                "RXCUI": scdc_cui,
+                "TTY": "SCDC",
+                "Basis": basis,
+                "BasisLabel": "Active Moiety" if basis == "AM" else "Active Ingredient" if basis == "AI" else basis,
+            })
+
+            if basis == "AM":
+                ins = set(scdc_to_ins.get(scdc_cui, set()))
+                active_moiety_cuis.update(ins)
+                active_ingredient_cuis.update(scdc_to_pins.get(scdc_cui, set()))
+
+                candidate_pins: Set[str] = set()
+                for in_cui in ins:
+                    candidate_pins.update(in_to_pins.get(in_cui, set()))
+                matched_pins = {
+                    pin
+                    for pin in candidate_pins
+                    if pin_match_names.get(pin) and any(pin_match_names[pin] in term for term in normalized_terms)
+                }
+                if matched_pins:
+                    active_ingredient_cuis.update(matched_pins)
+                elif not candidate_pins:
+                    active_ingredient_cuis.update(ins)
+
+            elif basis == "AI":
+                pins = set(scdc_to_pins.get(scdc_cui, set()))
+                ins = set(scdc_to_ins.get(scdc_cui, set()))
+                if pins:
+                    active_ingredient_cuis.update(pins)
+                    moieties_for_ref: Set[str] = set()
+                    for pin_cui in pins:
+                        moieties_for_ref.update(pin_to_ins.get(pin_cui, set()))
+                    active_moiety_cuis.update(moieties_for_ref or ins)
+                else:
+                    active_ingredient_cuis.update(ins)
+                    active_moiety_cuis.update(ins)
+
+        info: Dict[str, List[Dict[str, Any]]] = {"BasisOfStrength": basis_items}
+        active_ingredients = concepts(active_ingredient_cuis)
+        active_moieties = concepts(active_moiety_cuis)
+        if active_ingredients:
+            info["ActiveIngredients"] = active_ingredients
+        if active_moieties:
+            info["ActiveMoieties"] = active_moieties
+        product_info[product_cui] = info
+
+    return product_info
+
+
 def derive_pin_min_scdc(
     rel_path: str,
     in_set: Set[str],
@@ -571,6 +788,11 @@ def rxnorm_metadata_from_readme(rrf_dir: str) -> Dict[str, str]:
             break
     if release_label:
         metadata["rxnorm_release_label"] = release_label
+        release_text = f"{release_label} {os.path.basename(readme_path)}".lower()
+        if "prescribable content" in release_text or "prescribe" in release_text:
+            metadata["rxnorm_release_type"] = "Prescribable Content"
+        elif "full release" in release_text or "full" in release_text:
+            metadata["rxnorm_release_type"] = "Full Release"
         match = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", release_label)
         if match:
             metadata["rxnorm_version"] = match.group(1)
@@ -669,6 +891,15 @@ def main() -> int:
         ing_set = set(ingredients.keys())
         ing_to_scdc = scan_rxnrel_for_scdc(rel_path, ing_set, scdc_set, pin_set)
         scdc_to_scds = scan_rxnrel_for_scds(rel_path, scdc_set, scd_set)
+        in_to_pins, pin_to_ins = scan_rxnrel_in_pin_forms(rel_path, in_set, pin_set)
+        scdc_to_ins: Dict[str, Set[str]] = {}
+        scdc_to_pins: Dict[str, Set[str]] = {}
+        for in_cui in in_set:
+            for scdc in ing_to_scdc.get(in_cui, set()):
+                scdc_to_ins.setdefault(scdc, set()).add(in_cui)
+        for pin_cui in pin_set:
+            for scdc in ing_to_scdc.get(pin_cui, set()):
+                scdc_to_pins.setdefault(scdc, set()).add(pin_cui)
         # invert SCDC->SCDs to SCD->SCDC(s)
         scd_to_scdc: Dict[str, Set[str]] = {}
         for scdc, scds in scdc_to_scds.items():
@@ -686,6 +917,35 @@ def main() -> int:
 
         # RXNORM NDCs from RXNSAT
         cui_to_ndcs = scan_rxnsat_ndc_rxnorm(sat_path)
+        boss_from = scan_rxnsat_boss_from(sat_path)
+        product_terms = scan_rxnconso_terms_for_cuis(input_path, set(boss_from.keys()))
+        boss_pin_to_scdc, boss_in_to_scdc = derive_boss_form_scdc_links(
+            boss_from,
+            product_terms,
+            scdc_to_ins,
+            scdc_to_pins,
+            in_to_pins,
+            pin_to_ins,
+            ingredients,
+        )
+        product_active_info = derive_product_active_info(
+            boss_from,
+            product_terms,
+            scdc_names,
+            scdc_to_ins,
+            scdc_to_pins,
+            in_to_pins,
+            pin_to_ins,
+            ingredients,
+            unii_map,
+        )
+
+        def attach_active_info(obj: Dict[str, Any]) -> None:
+            info = product_active_info.get(obj["RXCUI"])
+            if not info:
+                return
+            for key, value in info.items():
+                obj[key] = value
 
         # SBD -> BN mapping
         sbd_to_bn = scan_rxnrel_for_sbd_bn(rel_path, sbd_set, bn_set)
@@ -694,11 +954,15 @@ def main() -> int:
         cui_to_scdc: Dict[str, Set[str]] = {}
         for cui in ing_set:
             if cui in in_set:
-                cui_to_scdc[cui] = ing_to_scdc.get(cui, set())
+                s = set()
+                s.update(ing_to_scdc.get(cui, set()))
+                s.update(boss_in_to_scdc.get(cui, set()))
+                cui_to_scdc[cui] = s
             elif cui in pin_set:
                 s = set()
                 s.update(ing_to_scdc.get(cui, set()))  # direct PIN->SCDC via precise_ingredient
                 s.update(pin_to_scdc.get(cui, set()))  # inherited via IN
+                s.update(boss_pin_to_scdc.get(cui, set()))  # AM BOSS products matched to their precise salt/form
                 cui_to_scdc[cui] = s
             elif cui in min_set:
                 cui_to_scdc[cui] = min_to_scdc.get(cui, set())
@@ -725,6 +989,7 @@ def main() -> int:
                     sbds = []
                     for b in sorted(scd_to_sbd.get(s, set()), key=lambda x: sbd_names.get(x, "")):
                         sbd_obj = {"Name": sbd_names.get(b, ""), "RXCUI": b, "TTY": "SBD"}
+                        attach_active_info(sbd_obj)
                         ndcs_s = sorted(cui_to_ndcs.get(b, set()))
                         if ndcs_s:
                             sbd_obj["NDCs"] = ndcs_s
@@ -733,6 +998,7 @@ def main() -> int:
                             sbd_obj["BNs"] = [{"Name": bn_names.get(bn, ""), "RXCUI": bn, "TTY": "BN"} for bn in bn_ids]
                         sbds.append(sbd_obj)
                     scd_obj = {"Name": scd_names.get(s, ""), "RXCUI": s, "TTY": "SCD"}
+                    attach_active_info(scd_obj)
                     # attach RXNORM NDCs if present for SCD
                     ndcs = sorted(cui_to_ndcs.get(s, set()))
                     if ndcs:
@@ -740,12 +1006,14 @@ def main() -> int:
                     if gpcks:
                         # add NDCs for GPCKs if present
                         for obj in gpcks:
+                            attach_active_info(obj)
                             ndcs_g = sorted(cui_to_ndcs.get(obj["RXCUI"], set()))
                             if ndcs_g:
                                 obj["NDCs"] = ndcs_g
                         scd_obj["GPCKs"] = gpcks
                     if bpcks:
                         for obj in bpcks:
+                            attach_active_info(obj)
                             ndcs_b = sorted(cui_to_ndcs.get(obj["RXCUI"], set()))
                             if ndcs_b:
                                 obj["NDCs"] = ndcs_b

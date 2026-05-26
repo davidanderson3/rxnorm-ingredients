@@ -108,9 +108,13 @@
       });
       fetch('metadata.json').then(r=>r.ok ? r.json() : Promise.reject()).then(meta=>{
         const version = meta.rxnorm_version || '';
+        const releaseType = meta.rxnorm_release_type || '';
         const label = meta.rxnorm_release_label || '';
         if(version){
-          versionEl.textContent = `Version ${version}`;
+          versionEl.textContent = releaseType ? `${releaseType} · Version ${version}` : `Version ${version}`;
+          if(label){ versionEl.title = label; }
+        } else if(releaseType){
+          versionEl.textContent = releaseType;
           if(label){ versionEl.title = label; }
         } else if(label){
           versionEl.textContent = label;
