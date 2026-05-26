@@ -6,3 +6,5 @@ RxNorm_Full_Prescribe*
 web/manifest.json
 web/data
 
+.zsh_history
+rxnorm_ingredients.json
